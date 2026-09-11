@@ -455,7 +455,6 @@ function bindNav() {
 async function boot() {
   bindWindowControls();
   bindNav();
-  bindThemePicker();
 
   // Render home immediately so UI is never blank on launch
   renderView('home');
