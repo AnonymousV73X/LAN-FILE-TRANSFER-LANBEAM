@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LANBeam — Fast. Local. Seamless.</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="window">
+
+
+    <!-- ===== Header row ===== -->
+    <header class="header">
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>
+        </svg>
+        <span class="brand-word">LANBeam</span>
+        <span class="brand-divider"></span>
+        <span class="brand-tagline">Fast. Local. Seamless.</span>
+      </div>
+      <div class="header-right">
+        <div class="status">
+          <svg class="status-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/>
+          </svg>
+          <span class="status-dot status-dot-online" id="status-dot"></span>
+          <span class="status-text" id="status-text">Connected to Local Network</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===== Body: sidebar + content ===== -->
+    <div class="body">
+      <!-- Sidebar -->
+      <nav class="sidebar">
+        <div class="nav-items">
+          <button class="nav-item active" data-view="home" title="Home">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+              <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+          </button>
+          <button class="nav-item" data-view="devices" title="Devices">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+              <line x1="8" y1="21" x2="16" y2="21"/>
+              <line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+          </button>
+          <button class="nav-item" data-view="history" title="History">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </button>
+          <button class="nav-item" data-view="settings" title="Settings">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+        </div>
+        <div class="sidebar-bottom">
+          <div class="theme-pill" id="theme-pill" title="Theme quick switcher">
+            <span class="theme-dot" style="background: #00E5FF"></span>
+            <span class="theme-dot" style="background: #8B5CF6"></span>
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Main content -->
+      <main class="content" id="content">
+        <!-- Home view is rendered here -->
+      </main>
+    </div>
+
+    <!-- ===== Bottom-right theme swatch picker (persistent) ===== -->
+    <div class="theme-picker">
+      <span class="theme-label">Theme</span>
+      <div class="swatch-row" id="swatch-row">
+        <button class="swatch active" data-color="#00E5FF" style="background:#00E5FF"></button>
+        <button class="swatch" data-color="#8B5CF6" style="background:#8B5CF6"></button>
+        <button class="swatch" data-color="#F59E0B" style="background:#F59E0B"></button>
+        <button class="swatch" data-color="#EC4899" style="background:#EC4899"></button>
+        <button class="swatch" data-color="#10B981" style="background:#10B981"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Templates for views (kept in DOM but swapped into .content) -->
+  <template id="view-home">
+    <!-- Top row: drop zone (70%) + QR panel (30%) -->
+    <section class="top-row">
+      <div class="dropzone" id="dropzone">
+        <svg class="dropzone-icon" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <h2 class="dropzone-title">Drop files here or click to browse</h2>
+        <p class="dropzone-sub">Images, videos, documents, archives and more…</p>
+        <input type="file" id="dropzone-input" multiple style="display:none" />
+      </div>
+      <div class="qr-panel">
+        <div class="qr-frame">
+          <img id="qr-image" alt="Pair QR code" />
+        </div>
+        <p class="qr-caption">Scan to pair with your phone</p>
+        <div class="qr-url-row">
+          <input type="text" id="qr-url-text" readonly class="qr-url-input" title="Pairing link" />
+          <button id="qr-copy-btn" class="qr-copy-btn" title="Copy pairing link">Copy</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Connected devices -->
+    <section class="devices-section">
+      <div class="section-header">
+        <h3>Connected Devices</h3>
+        <div class="section-meta">
+          <span class="status-dot status-dot-online"></span>
+          <span id="device-count">0 devices online</span>
+        </div>
+      </div>
+      <div class="device-cards" id="device-cards">
+        <div class="empty-hint">No paired devices yet. Scan the QR above with your phone.</div>
+      </div>
+    </section>
+
+    <!-- Active transfer card -->
+    <section class="transfer-section" id="transfer-section" style="display:none">
+      <div class="transfer-card">
+        <div class="transfer-info">
+          <svg class="transfer-file-icon" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2"/>
+            <polygon points="10,9 16,12 10,15" fill="currentColor" stroke="none"/>
+          </svg>
+          <div class="transfer-text">
+            <div class="transfer-name" id="transfer-name">—</div>
+            <div class="transfer-meta" id="transfer-meta">— · —</div>
+          </div>
+        </div>
+        <div class="transfer-progress">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+          </div>
+          <div class="progress-stats" id="progress-stats">0% · 0 / 0 · ETA —</div>
+        </div>
+        <div class="transfer-speed">
+          <div class="speed-readout">
+            <span class="speed-value" id="speed-value">0.0</span>
+            <span class="speed-unit">Mbps</span>
+          </div>
+          <div class="speed-label">Current speed</div>
+          <svg class="speed-sparkline" id="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <template id="view-devices">
+    <section class="page">
+      <h2 class="page-title">Devices</h2>
+      <p class="page-sub">Paired devices on this LAN. Click a device to send files.</p>
+      <div class="device-cards" id="device-cards-page"></div>
+      <h3 class="page-subtitle">Discovered Peers</h3>
+      <div class="device-cards" id="peer-cards-page"></div>
+    </section>
+  </template>
+
+  <template id="view-history">
+    <section class="page">
+      <h2 class="page-title">History</h2>
+      <p class="page-sub">Recent transfers with throughput and integrity.</p>
+      <div class="history-list" id="history-list">
+        <div class="empty-hint">No transfers yet.</div>
+      </div>
+    </section>
+  </template>
+
+  <template id="view-settings">
+    <section class="page">
+      <h2 class="page-title">Settings</h2>
+      <p class="page-sub">Tune the transfer engine and theme.</p>
+      <div class="settings-grid">
+        <label class="setting">
+          <span class="setting-label">Chunk size (MB)</span>
+          <input type="range" min="1" max="16" step="1" id="setting-chunk" />
+          <span class="setting-value" id="setting-chunk-val">4</span>
+        </label>
+        <label class="setting">
+          <span class="setting-label">Max parallel streams</span>
+          <input type="range" min="1" max="32" step="1" id="setting-streams" />
+          <span class="setting-value" id="setting-streams-val">8</span>
+        </label>
+        <label class="setting">
+          <span class="setting-label">Compression</span>
+          <select id="setting-compression">
+            <option value="auto">Auto (entropy-based)</option>
+            <option value="on">Always on</option>
+            <option value="off">Always off</option>
+          </select>
+        </label>
+        <label class="setting">
+          <span class="setting-label">Font</span>
+          <select id="setting-font">
+            <option value="figtree">Figtree (Default)</option>
+            <option value="outfit">Outfit</option>
+            <option value="system">System Default</option>
+          </select>
+        </label>
+        <label class="setting">
+          <span class="setting-label">WiFi slow-link warning</span>
+          <input type="checkbox" id="setting-warn" />
+        </label>
+      </div>
+      <h3 class="page-subtitle">Accent color</h3>
+      <div class="settings-swatches" id="settings-swatches">
+        <button class="swatch active" data-color="#00E5FF" style="background:#00E5FF"></button>
+        <button class="swatch" data-color="#8B5CF6" style="background:#8B5CF6"></button>
+        <button class="swatch" data-color="#F59E0B" style="background:#F59E0B"></button>
+        <button class="swatch" data-color="#EC4899" style="background:#EC4899"></button>
+        <button class="swatch" data-color="#10B981" style="background:#10B981"></button>
+      </div>
+      <h3 class="page-subtitle">Benchmark</h3>
+      <button class="bench-btn" id="bench-run">Run benchmark</button>
+      <div class="bench-results" id="bench-results"></div>
+    </section>
+  </template>
+
+  <script src="main.js"></script>
+</body>
+</html>

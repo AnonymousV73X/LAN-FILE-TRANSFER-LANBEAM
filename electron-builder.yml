@@ -1,0 +1,36 @@
+appId: com.lanbeam.app
+productName: LANBeam
+copyright: Copyright © 2026 LANBeam
+directories:
+  output: release
+  buildResources: assets
+files:
+  - dist/**/*
+  - native/index.js
+  - native/index.d.ts
+  - native/*.node
+  - native/package.json
+  - assets/**/*
+  - package.json
+extraMetadata:
+  main: dist/main/index.js
+asarUnpack:
+  - native/*.node
+win:
+  target:
+    - nsis
+  icon: assets/icon.png
+mac:
+  target:
+    - dmg
+  icon: assets/icon.png
+  category: public.app-category.utilities
+linux:
+  target:
+    - AppImage
+    - deb
+  icon: assets/icon.png
+  category: Network
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

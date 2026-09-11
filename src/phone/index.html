@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>LANBeam</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2300E5FF'><path d='M13 2L4 14h7l-1 8 9-12h-7l1-8z'/></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+      <span>LANBeam</span>
+    </div>
+    <div class="pair-status" id="pair-status">Pairing…</div>
+  </header>
+
+  <main class="main">
+    <!-- Pairing banner -->
+    <section class="pair-banner" id="pair-banner" style="display:none">
+      <p>You're about to pair with <strong id="peer-name">this desktop</strong>. Tap below to confirm.</p>
+      <button id="pair-confirm">Pair this device</button>
+    </section>
+
+    <!-- Drop / pick files -->
+    <section class="picker">
+      <label class="picker-zone" id="picker-zone">
+        <input type="file" id="file-input" multiple style="display:none" />
+        <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <div class="picker-title">Send files to desktop</div>
+        <div class="picker-sub">Tap to pick · long-press to drag</div>
+      </label>
+    </section>
+
+    <!-- Active queue -->
+    <section class="queue" id="queue">
+      <h3>Transfer queue</h3>
+      <div id="queue-list">
+        <div class="empty">No files queued yet.</div>
+      </div>
+    </section>
+
+    <!-- Receive list (desktop→phone) -->
+    <section class="received" id="received" style="display:none">
+      <h3>Received from desktop</h3>
+      <div id="received-list"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="wifi-info">—</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

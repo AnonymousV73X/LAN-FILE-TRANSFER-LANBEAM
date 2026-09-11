@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+native/target/
+native/index.node
+*.log
+.DS_Store
+.vscode/
+.idea/
+benchmark-results/*.json
+!benchmark-results/sample-report.json

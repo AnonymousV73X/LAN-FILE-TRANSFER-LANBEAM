@@ -1,0 +1,58 @@
+{
+  "_comment": "Sample benchmark report — actual numbers will vary by machine + WiFi link.",
+  "system": "linux x86_64 / Intel(R) Core(TM) i7-12700K",
+  "wifi": {
+    "connected": true,
+    "ssid": "HomeWiFi",
+    "band": "5GHz",
+    "channel": 36,
+    "channelWidthMHz": 80,
+    "phyRateMbps": 1201,
+    "signalDbm": -42,
+    "generation": "WiFi 6"
+  },
+  "results": [
+    {
+      "spec": { "sizeMB": 64, "mode": "random", "label": "64MB-random" },
+      "baselineThroughputMbps": 412.3,
+      "optimizedThroughputMbps": 938.7,
+      "upliftPct": 127.7,
+      "cpuUsagePct": 28,
+      "chunkRetries": 0,
+      "integrityOk": true,
+      "durationMs": 545,
+      "wifi": { "generation": "WiFi 6", "band": "5GHz", "channelWidthMHz": 80, "phyRateMbps": 1201 },
+      "createdAt": 1788844139000
+    },
+    {
+      "spec": { "sizeMB": 64, "mode": "mixed", "label": "64MB-mixed" },
+      "baselineThroughputMbps": 398.1,
+      "optimizedThroughputMbps": 1102.4,
+      "upliftPct": 176.9,
+      "cpuUsagePct": 31,
+      "chunkRetries": 0,
+      "integrityOk": true,
+      "durationMs": 464,
+      "wifi": { "generation": "WiFi 6", "band": "5GHz", "channelWidthMHz": 80, "phyRateMbps": 1201 },
+      "createdAt": 1788844139000
+    },
+    {
+      "spec": { "sizeMB": 256, "mode": "mixed", "label": "256MB-mixed" },
+      "baselineThroughputMbps": 386.5,
+      "optimizedThroughputMbps": 1087.2,
+      "upliftPct": 181.3,
+      "cpuUsagePct": 29,
+      "chunkRetries": 1,
+      "integrityOk": true,
+      "durationMs": 1884,
+      "wifi": { "generation": "WiFi 6", "band": "5GHz", "channelWidthMHz": 80, "phyRateMbps": 1201 },
+      "createdAt": 1788844139000
+    }
+  ],
+  "summary": {
+    "avgBaseline": 398.97,
+    "avgOptimized": 1042.77,
+    "avgUplift": 161.97,
+    "count": 3
+  }
+}
