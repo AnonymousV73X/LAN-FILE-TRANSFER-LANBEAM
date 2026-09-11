@@ -41,6 +41,7 @@ export interface HttpServerOptions {
   store: StateStore;
   orchestrator: TransferOrchestrator;
   downloadDir: string;
+  onDevicePaired?: (device: any) => void;
 }
 
 export interface HttpServerHandle {
@@ -105,10 +106,21 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
   }
 
   function authDevice(req: http.IncomingMessage): string | null {
-    const cookie = req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('lanbeam-session='));
-    if (!cookie) return null;
-    const value = cookie.slice('lanbeam-session='.length);
-    return sessions.get(value) ?? null;
+    // Primary: session cookie (issued at pair time, valid in current process)
+    const cookieHdr = req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('lanbeam-session='));
+    if (cookieHdr) {
+      const value = cookieHdr.slice('lanbeam-session='.length);
+      const deviceId = sessions.get(value);
+      if (deviceId) return deviceId;
+    }
+    // Fallback: X-Device-Id header — phone sends its deviceId; valid if it's in the paired store.
+    // This covers app restarts where in-memory sessions are wiped.
+    const headerDeviceId = req.headers['x-device-id'] as string | undefined;
+    if (headerDeviceId) {
+      const found = opts.store.pairedDevices.find(d => d.deviceId === headerDeviceId);
+      if (found) return found.deviceId;
+    }
+    return null;
   }
 
   const server = http.createServer(async (req, res) => {
@@ -116,10 +128,10 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       const parsed = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       const pathname = parsed.pathname;
 
-      // CORS for phone browser
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Chunk-Index, X-File-Id, X-Compressed');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Chunk-Index, X-File-Id, X-Compressed, X-Device-Id');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
       // ---------------------------------------------------------------
@@ -152,6 +164,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         const reqObj = JSON.parse(body.toString('utf8')) as PairingRequest;
         const paired = opts.pairManager.toPairedDevice(reqObj);
         opts.store.addPairedDevice(paired);
+        opts.onDevicePaired?.(paired);
         const cookie = issueSession(paired.deviceId);
         res.setHeader('Set-Cookie', `lanbeam-session=${cookie}; Path=/; HttpOnly; Max-Age=31536000`);
         sendJson(res, 200, { ok: true, paired });

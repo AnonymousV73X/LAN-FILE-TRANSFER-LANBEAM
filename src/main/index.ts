@@ -220,6 +220,9 @@ async function boot() {
     store,
     orchestrator,
     downloadDir: DOWNLOAD_DIR,
+    onDevicePaired: (_device) => {
+      mainWindow?.webContents.send('devices:updated', store!.pairedDevices);
+    },
   });
   httpPort = httpHandle.port;
   baseUrl = httpHandle.url;

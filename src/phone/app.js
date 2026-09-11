@@ -46,7 +46,7 @@ async function tryPair() {
   if (!token) {
     // No token — assume already paired (cookie set); verify with /api/state.
     try {
-      const r = await fetch('/api/state');
+      const r = await fetch('/api/state', { headers: { 'X-Device-Id': state.deviceId }, credentials: 'include' });
       if (r.ok) {
         state.paired = true;
         banner.style.display = 'none';
@@ -208,7 +208,8 @@ async function pump() {
     // POST manifest to start the transfer (receiver allocates a transfer slot)
     const startResp = await fetch('/api/transfer/start', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Device-Id': state.deviceId },
+      credentials: 'include',
       body: JSON.stringify(manifest),
     });
     if (!startResp.ok) throw new Error('start failed');
@@ -229,7 +230,9 @@ async function pump() {
             'Content-Type': 'application/octet-stream',
             'X-Chunk-Index': String(idx),
             'X-Compressed': chunk.compressed ? '1' : '0',
+            'X-Device-Id': state.deviceId,
           },
+          credentials: 'include',
           body: buf,
         });
         if (!r.ok) throw new Error(`chunk ${idx} upload failed: ${r.status}`);
@@ -240,7 +243,11 @@ async function pump() {
     await Promise.all(workers);
 
     // Tell receiver the transfer is complete (triggers final integrity check)
-    await fetch(`/api/transfer/${transferId}/complete`, { method: 'POST' });
+    await fetch(`/api/transfer/${transferId}/complete`, {
+      method: 'POST',
+      headers: { 'X-Device-Id': state.deviceId },
+      credentials: 'include',
+    });
     next.status = 'done';
     renderQueue();
     toast(`${next.name} sent`);

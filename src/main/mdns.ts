@@ -31,8 +31,10 @@ export class MdnsService {
   private browser: Browser | null = null;
   private peers = new Map<string, DiscoveredPeer>();
   private listeners = new Set<(peers: DiscoveredPeer[]) => void>();
+  private ownDeviceId = '';
 
   advertise(port: number, deviceId: string, appVersion: string): void {
+    this.ownDeviceId = deviceId;
     if (this.published) {
       this.published.stop();
       this.published = null;
@@ -58,6 +60,7 @@ export class MdnsService {
     browser.on('up', (service: Service) => {
       const txt = service.txt ?? {};
       const deviceId = String(txt.deviceId ?? service.name);
+      if (deviceId === this.ownDeviceId) return;
       const peer: DiscoveredPeer = {
         deviceId,
         name: service.name,
