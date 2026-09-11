@@ -255,11 +255,20 @@ async function pump() {
 }
 
 // ---------------------------------------------------------------------------
-// Crypto helpers — SubtleCrypto SHA-256 (browser-native)
+// Crypto helpers — SubtleCrypto SHA-256 (requires secure context / HTTPS).
+// Falls back to FNV-1a when crypto.subtle is unavailable (plain HTTP LAN).
 // ---------------------------------------------------------------------------
 async function sha256Hex(buf) {
-  const digest = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const ab = buf instanceof Uint8Array ? buf.buffer : buf;
+    const digest = await crypto.subtle.digest('SHA-256', ab);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  // Insecure FNV-1a fallback (fingerprint only, not cryptographic)
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let h = 0x811c9dc5;
+  for (const b of bytes) { h ^= b; h = (Math.imul(h, 0x01000193) >>> 0); }
+  return h.toString(16).padStart(8, '0').repeat(8);
 }
 
 // ---------------------------------------------------------------------------

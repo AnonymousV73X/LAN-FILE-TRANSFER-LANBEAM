@@ -287,23 +287,7 @@ function renderBenchResults(results) {
   `).join('');
 }
 
-// ---------------------------------------------------------------------------
-// Theme swatch picker (persistent bottom-right)
-// ---------------------------------------------------------------------------
-function bindThemePicker() {
-  const row = document.querySelectorAll('#swatch-row .swatch');
-  row.forEach(sw => {
-    sw.addEventListener('click', () => applyAccent(sw.dataset.color || '#00E5FF', row));
-  });
-  // Theme pill expands the same picker (just toggles the next swatch)
-  const pill = document.getElementById('theme-pill');
-  pill?.addEventListener('click', () => {
-    const swatches = Array.from(document.querySelectorAll('#swatch-row .swatch'));
-    const idx = swatches.findIndex(sw => sw.classList.contains('active'));
-    const next = swatches[(idx + 1) % swatches.length];
-    if (next) applyAccent(next.dataset.color || '#00E5FF', swatches);
-  });
-}
+
 
 function applyAccent(color, swatchEls) {
   document.documentElement.style.setProperty('--accent-color', color);
@@ -513,7 +497,7 @@ async function boot() {
       if (s.qr) {
         state.qr = s.qr;
       }
-      applyAccent(s.settings?.accentColor || '#00E5FF', document.querySelectorAll('#swatch-row .swatch'));
+      applyAccent(s.settings?.accentColor || '#00E5FF', []);
       applyFont(s.settings?.fontChoice || 'figtree');
 
       if (state.view === 'home') {

@@ -211,24 +211,13 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   background: var(--accent-color);
   border-radius: 0 2px 2px 0;
 }
-.sidebar-bottom { display: flex; justify-content: center; }
-.theme-pill {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  cursor: pointer;
-}
-.theme-pill .theme-dot { width: 10px; height: 10px; border-radius: 50%; }
-.theme-pill svg { color: var(--text-dim); }
+
 
 /* ===== Content ===== */
 .content {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
-  padding-bottom: 80px; /* room for the floating theme picker */
 }
 
 /* ===== Home view: top row (drop zone + QR) ===== */
@@ -408,31 +397,20 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   width: 110px; height: 28px; margin-top: 8px;
 }
 
-/* ===== Theme picker (persistent bottom-right) ===== */
-.theme-picker {
-  position: absolute;
-  bottom: 14px; right: 18px;
-  display: flex; align-items: center; gap: 10px;
-  z-index: 50;
-  padding: 8px 12px;
-  border-radius: var(--radius-pill);
-  background: rgba(10, 10, 10, 0.7);
-  backdrop-filter: blur(10px);
-  border: 1px solid var(--border);
-}
-.theme-label { color: var(--text-dim); font-size: 11px; }
-.swatch-row { display: flex; gap: 8px; }
+/* ===== Swatches (settings page only) ===== */
 .swatch {
-  width: 14px; height: 14px;
+  width: 22px; height: 22px;
   border-radius: 50%;
   border: 2px solid transparent;
   transition: transform 0.15s, border-color 0.15s;
   padding: 0;
+  cursor: pointer;
 }
 .swatch.active {
   border-color: var(--text-primary);
   transform: scale(1.15);
 }
+
 
 /* ===== Generic page ===== */
 .page { padding: 4px 0; max-width: 960px; }
