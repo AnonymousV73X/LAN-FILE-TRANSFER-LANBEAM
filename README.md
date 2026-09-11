@@ -27,36 +27,36 @@ or through V8 buffer copies.
 │   └────────────┘   └────────────┘   └──────────────┘               │
 │                                                                    │
 │   ┌─────────────────────────────────────────────────┐              │
-│   │ Transfer orchestrator                            │              │
-│   │ - manifest (chunk + BLAKE3 + Merkle)             │              │
-│   │ - inbound chunk verify + zero-copy write         │              │
-│   │ - resume state (per merkleRoot)                  │              │
+│   │ Transfer orchestrator                            │             │
+│   │ - manifest (chunk + BLAKE3 + Merkle)             │             │
+│   │ - inbound chunk verify + zero-copy write         │             │
+│   │ - resume state (per merkleRoot)                  │             │
 │   └────────────────┬────────────────────────────────┘              │
 │                    │ async API                                     │
 │                    ▼                                               │
-│   ┌─────────────────────────────────────────────────┐              │
-│   │ lanbeam-core (Rust, napi-rs)                    │              │
-│   │ - blake3 hashing                                 │              │
-│   │ - zstd per-chunk compression (entropy heuristic)│              │
-│   │ - Merkle tree construction                       │              │
-│   │ - quinn QUIC transport (TLS 1.3, multi-stream)   │              │
-│   │ - tokio zero-copy I/O                            │              │
-│   └─────────────────────────────────────────────────┘              │
+│   ┌──────────────────────────────────────────────────┐             │
+│   │ lanbeam-core (Rust, napi-rs)                     │             │
+│   │ - blake3 hashing                                 │             │
+│   │ - zstd per-chunk compression (entropy heuristic) │             │
+│   │ - Merkle tree construction                       │             │
+│   │ - quinn QUIC transport (TLS 1.3, multi-stream)   │             │
+│   │ - tokio zero-copy I/O                            │             │
+│   └──────────────────────────────────────────────────┘             │
 │                                                                    │
 └────────────────────────────────────────────────────────────────────┘
-         ▲                                       ▲
-         │ Electron IPC (contextBridge)           │ HTTP/1.1 + QUIC
-         │                                       │
-┌────────┴─────────┐                  ┌─────────┴─────────┐
-│ Electron renderer │                  │ Phone browser      │
-│ (desktop UI)      │                  │ (vanilla HTML/JS)  │
-│ - drop zone + QR  │                  │ - picker + drag/drop│
-│ - device cards    │                  │ - per-file queue   │
-│ - transfer card   │                  │ - WebTransport det │
-│   + sparkline     │                  │   + HTTP fallback  │
-│ - theme picker    │                  │ - 4–8 parallel     │
-└───────────────────┘                  │   range fetches    │
-                                       └────────────────────┘
+         ▲                                      ▲
+         │ Electron IPC (contextBridge)         │ HTTP/1.1 + QUIC
+         │                                      │
+┌────────┴──────────┐                 ┌─────────┴──────────┐
+│ Electron renderer │                 │ Phone browser      │
+│ (desktop UI)      │                 │ (vanilla HTML/JS)  │
+│ - drop zone + QR  │                 │ - picker +drag/drop│
+│ - device cards    │                 │ - per-file queue   │
+│ - transfer card   │                 │ - WebTransport det │
+│   + sparkline     │                 │   + HTTP fallback  │
+│ - theme picker    │                 │ - 4–8 parallel     │
+└───────────────────┘                 │   range fetches    │
+                                      └────────────────────┘
 ```
 
 ### Transport matrix
@@ -270,4 +270,4 @@ The optimized path's uplift over baseline comes from:
 
 ## 9. License
 
-MIT.
+TBD.
