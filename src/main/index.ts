@@ -26,6 +26,7 @@ import { TransferOrchestrator, OrchestratorEvent } from './transfer-orchestrator
 import { queryWifiInfo } from './wifi-info';
 import { runBenchmark } from './benchmark';
 import { isNativeCoreAvailable } from './core-loader';
+import { initLogger, log } from './logger';
 
 const APP_VERSION = '1.0.0';
 const DOWNLOAD_DIR = path.join(app.getPath('downloads'), 'LANBeam');
@@ -200,6 +201,8 @@ function getPrimaryLanIp(): string {
 }
 
 async function boot() {
+  await initLogger();
+  log.info('LANBeam starting up, version:', APP_VERSION);
   await fs.mkdir(DOWNLOAD_DIR, { recursive: true });
   store = new StateStore();
   pairManager = new PairingManager();

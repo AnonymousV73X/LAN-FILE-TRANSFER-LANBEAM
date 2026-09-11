@@ -30,6 +30,7 @@ import { PairingManager, PairingRequest } from './pairing';
 import { StateStore } from './store';
 import { TransferOrchestrator } from './transfer-orchestrator';
 import { queryWifiInfo } from './wifi-info';
+import { log } from './logger';
 
 const PHONE_DIR = path.join(__dirname, '..', '..', 'src', 'phone');
 
@@ -212,7 +213,11 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         const chunkIndex = parseInt(req.headers['x-chunk-index'] as string, 10);
         const compressed = req.headers['x-compressed'] === '1';
         const data = await readBody(req, 32 * 1024 * 1024); // chunk up to 32MB
+        log.info(`[http] Received chunk upload: transfer=${transferId}, chunkIndex=${chunkIndex}, size=${data.length}, compressed=${compressed}`);
         const ok = await opts.orchestrator.receiveChunk(transferId, chunkIndex, data, compressed);
+        if (!ok) {
+          log.warn(`[http] Chunk verification failed for transfer=${transferId}, chunkIndex=${chunkIndex}`);
+        }
         sendJson(res, ok ? 200 : 422, { ok, chunkIndex });
         return;
       }
