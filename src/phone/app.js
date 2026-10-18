@@ -52,6 +52,7 @@ async function tryPair() {
         banner.style.display = 'none';
         pairStatus.textContent = 'Paired';
         pairStatus.classList.add('paired');
+        startHeartbeat();
         return;
       }
     } catch {}
@@ -86,11 +87,28 @@ async function tryPair() {
       toast('Paired successfully');
       // Clear token from URL so refresh doesn't try to pair again.
       history.replaceState({}, document.title, location.pathname);
+      startHeartbeat();
     } else {
       const err = await r.json().catch(() => ({ error: 'pairing failed' }));
       toast('Pairing failed: ' + (err.error || 'unknown'));
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat — keeps lastSeen fresh on the desktop so it shows us as online.
+// ---------------------------------------------------------------------------
+function startHeartbeat() {
+  if (state.heartbeatTimer) return; // already running
+  const beat = () => {
+    fetch('/api/heartbeat', {
+      method: 'POST',
+      headers: { 'X-Device-Id': state.deviceId },
+      credentials: 'include',
+    }).catch(() => {}); // fire-and-forget; network hiccups are fine
+  };
+  beat(); // immediate first beat
+  state.heartbeatTimer = setInterval(beat, 15000); // every 15s
 }
 
 // ---------------------------------------------------------------------------

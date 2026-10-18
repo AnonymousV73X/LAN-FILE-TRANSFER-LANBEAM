@@ -99,6 +99,16 @@ export class StateStore {
     this.store.set('pairedDevices', devices);
   }
 
+  /** Remove any duplicate deviceIds, keeping the one with the newest lastSeen. */
+  deduplicatePairedDevices(): void {
+    const seen = new Map<string, PairedDevice>();
+    for (const d of this.store.get('pairedDevices')) {
+      const existing = seen.get(d.deviceId);
+      if (!existing || d.lastSeen > existing.lastSeen) seen.set(d.deviceId, d);
+    }
+    this.store.set('pairedDevices', [...seen.values()]);
+  }
+
   removePairedDevice(deviceId: string): void {
     this.store.set('pairedDevices', this.store.get('pairedDevices').filter(d => d.deviceId !== deviceId));
   }

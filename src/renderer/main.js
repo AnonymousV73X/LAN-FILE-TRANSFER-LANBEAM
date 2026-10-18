@@ -103,12 +103,14 @@ function applyFont(choice) {
 function renderDevices() {
   const host = document.getElementById('device-cards');
   if (!host) return;
+  const ONLINE_MS = 30 * 1000; // 30s window — phone heartbeats every 15s
+  const now = Date.now();
   if (!state.pairedDevices.length) {
     host.innerHTML = `<div class="empty-hint">No paired devices yet. Scan the QR above with your phone.</div>`;
   } else {
-    host.innerHTML = state.pairedDevices.map(d => deviceCardHtml(d, true)).join('');
+    host.innerHTML = state.pairedDevices.map(d => deviceCardHtml(d, now - d.lastSeen < ONLINE_MS)).join('');
   }
-  const count = state.pairedDevices.filter(d => Date.now() - d.lastSeen < 5 * 60 * 1000).length;
+  const count = state.pairedDevices.filter(d => now - d.lastSeen < ONLINE_MS).length;
   const counter = document.getElementById('device-count');
   if (counter) counter.textContent = `${count} device${count === 1 ? '' : 's'} online`;
 }
@@ -520,6 +522,12 @@ async function boot() {
       console.error('Failed to refresh QR:', err);
     }
   }
+
+  // Re-render device cards every 20s so online/offline status updates automatically.
+  setInterval(() => {
+    if (state.view === 'home') renderDevices();
+    if (state.view === 'devices') renderDevicesView();
+  }, 20000);
 }
 
 boot().catch(err => console.error('renderer boot failed:', err));

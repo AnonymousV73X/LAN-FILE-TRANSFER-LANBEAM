@@ -205,6 +205,8 @@ async function boot() {
   log.info('LANBeam starting up, version:', APP_VERSION);
   await fs.mkdir(DOWNLOAD_DIR, { recursive: true });
   store = new StateStore();
+  // Dedup persisted paired devices — keeps newest lastSeen per deviceId
+  store.deduplicatePairedDevices();
   pairManager = new PairingManager();
   orchestrator = new TransferOrchestrator(store);
   mdns = new MdnsService();
