@@ -132,7 +132,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 140px 0 22px; /* room on the right for native titleBarOverlay controls */
+  padding: 0 165px 0 22px; /* plenty of clearance for Windows titleBarOverlay buttons */
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
@@ -579,7 +579,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 
 @media (max-width: 768px) {
-  .header { padding: 0 110px 0 16px; }
+  .header { padding: 0 155px 0 16px; }
   .brand-tagline, .brand-divider { display: none; }
   .sidebar { width: 56px; padding: 14px 0; }
   .nav-items { gap: 12px; }
@@ -592,7 +592,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 
 @media (max-width: 520px) {
-  .header { height: 48px; padding: 0 90px 0 12px; }
+  .header { height: 48px; padding: 0 145px 0 12px; }
   .brand-word { font-size: 16px; }
   .status-text { display: none; }
   .sidebar { width: 48px; }
