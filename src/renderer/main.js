@@ -363,6 +363,7 @@ function bindTransferEvents() {
 function updateTransferCard(p) {
   const section = document.getElementById('transfer-section');
   if (!section) return;
+  if (hideTransferTimeout) { clearTimeout(hideTransferTimeout); hideTransferTimeout = null; }
   section.style.display = 'block';
   const pct = p.totalBytes > 0 ? (p.bytesTransferred / p.totalBytes) * 100 : 0;
   const fill = document.getElementById('progress-fill');
@@ -379,11 +380,18 @@ function updateTransferCard(p) {
   state.currentTransfer = p;
 }
 
+let hideTransferTimeout = null;
+
 function finalizeTransferCard(result) {
   const stats = document.getElementById('progress-stats');
   if (stats) stats.textContent = `Complete · ${result.averageThroughputMbps.toFixed(1)} Mbps avg · integrity ${result.integrityOk ? 'OK' : 'FAILED'}`;
   const fill = document.getElementById('progress-fill');
   if (fill) fill.style.width = `100%`;
+  if (hideTransferTimeout) clearTimeout(hideTransferTimeout);
+  hideTransferTimeout = setTimeout(() => {
+    const section = document.getElementById('transfer-section');
+    if (section) section.style.display = 'none';
+  }, 3500);
 }
 
 // ---------------------------------------------------------------------------
