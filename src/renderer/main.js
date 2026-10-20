@@ -32,9 +32,23 @@ document.addEventListener('click', () => {
   document.querySelectorAll('.custom-dropdown.open').forEach(d => d.classList.remove('open'));
 });
 function updateHistoryNav(show) {
+  let isEnabled;
+  if (typeof show === 'boolean') {
+    isEnabled = show;
+    try { localStorage.setItem('lanbeam:showHistory', show ? 'true' : 'false'); } catch (_) {}
+  } else if (state.settings && typeof state.settings.showHistory === 'boolean') {
+    isEnabled = state.settings.showHistory;
+  } else {
+    try {
+      isEnabled = localStorage.getItem('lanbeam:showHistory') === 'true';
+    } catch (_) {
+      isEnabled = false;
+    }
+  }
+
   const btn = document.getElementById('nav-history-btn');
-  if (btn) btn.style.display = show ? 'flex' : 'none';
-  if (!show && state.view === 'history') {
+  if (btn) btn.style.display = isEnabled ? 'flex' : 'none';
+  if (!isEnabled && state.view === 'history') {
     renderView('home');
   }
 }
@@ -276,7 +290,10 @@ function bindSettings() {
     if (streams) streams.value = String(state.settings.maxParallelStreams);
     if (streamsVal) streamsVal.textContent = String(state.settings.maxParallelStreams);
     if (warn) warn.checked = !state.settings.warnOnSlowWifi;
-    if (historyToggle) historyToggle.checked = !!state.settings.showHistory;
+    const isHistEnabled = typeof state.settings.showHistory === 'boolean'
+      ? state.settings.showHistory
+      : (localStorage.getItem('lanbeam:showHistory') === 'true');
+    if (historyToggle) historyToggle.checked = isHistEnabled;
 
     // Set initial custom dropdown selections
     const compRoot = document.getElementById('dropdown-compression');
@@ -427,6 +444,7 @@ function bindTransferEvents() {
     } else if (ev.type === 'inbound:complete' || ev.type === 'outbound:complete') {
       finalizeTransferCard(ev.result);
       state.history = [ev.result, ...state.history];
+      if (state.view === 'history') renderHistory();
     } else if (ev.type === 'inbound:accept-request') {
       // Show a toast/notice; v1 auto-accepts paired devices.
       console.log('[lanbeam] inbound transfer requested:', ev);
@@ -579,8 +597,12 @@ async function boot() {
 
   // Settings updates
   window.lanbeam.settings.onUpdated((s) => {
-    state.settings = s;
-    updateHistoryNav(!!s.showHistory);
+    state.settings = { ...state.settings, ...s };
+    if (typeof s.showHistory === 'boolean') {
+      updateHistoryNav(s.showHistory);
+    } else {
+      updateHistoryNav();
+    }
   });
 
   // Load initial state
@@ -595,7 +617,10 @@ async function boot() {
       }
       applyAccent(s.settings?.accentColor || '#00E5FF', []);
       applyFont(s.settings?.fontChoice || 'figtree');
-      updateHistoryNav(!!s.settings?.showHistory);
+      const initialShowHistory = typeof s.settings?.showHistory === 'boolean'
+        ? s.settings.showHistory
+        : (localStorage.getItem('lanbeam:showHistory') === 'true');
+      updateHistoryNav(initialShowHistory);
 
       if (state.view === 'home') {
         renderQr();
