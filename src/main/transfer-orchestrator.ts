@@ -133,12 +133,33 @@ export class TransferOrchestrator extends EventEmitter {
     const transferId = manifest.fileId;
     if (this.inbound.has(transferId)) return transferId;
 
+    // Pre-allocate the output file so all chunk writes can use 'r+' safely,
+    // even when parallel chunks arrive out of order.
+    // Sanitise fileName to prevent path traversal.
+    const safeName = path.basename(manifest.fileName);
+    const outPath = path.join(outputDir, safeName);
+    try {
+      await fs.mkdir(outputDir, { recursive: true });
+      // Only pre-allocate if file doesn't already exist (resume case).
+      const existing = await fs.stat(outPath).catch(() => null);
+      if (!existing) {
+        const h = await fs.open(outPath, 'w');
+        // Pre-size the file to avoid race between parallel chunk writers.
+        if (manifest.fileSize > 0) {
+          await h.write(Buffer.alloc(1), 0, 1, manifest.fileSize - 1);
+        }
+        await h.close();
+      }
+    } catch (err) {
+      log.error(`[orchestrator] Failed to pre-allocate output file ${outPath}:`, err);
+    }
+
     // Resume: if we've seen this merkleRoot before, recover confirmed chunks
     const resume = this.resumeState.get(manifest.merkleRoot);
     const received = resume ? new Set(resume) : new Set<number>();
 
     const transfer: InboundTransfer = {
-      manifest,
+      manifest: { ...manifest, fileName: safeName }, // use sanitised name
       outputDir,
       receivedChunks: received,
       failedChunks: [],
@@ -195,16 +216,22 @@ export class TransferOrchestrator extends EventEmitter {
     log.info(`[orchestrator] Chunk ${chunkIndex} verified successfully (len=${buf.length}, hash=${expected.hash.slice(0, 12)}...)`);
 
     // Write the verified chunk to disk at its correct offset.
+    // File is pre-allocated in startInbound so 'r+' always works.
     const outPath = path.join(transfer.outputDir, transfer.manifest.fileName);
-    const handle = await fs.open(outPath, 'r+').catch(() => fs.open(outPath, 'w+'));
     try {
-      await handle.write(buf, 0, buf.length, expected.offset);
-      transfer.receivedChunks.add(chunkIndex);
-      transfer.bytesTransferred += buf.length;
-      this.resumeState.set(transfer.manifest.merkleRoot, new Set(transfer.receivedChunks));
-    } finally {
-      await handle.close();
+      const handle = await fs.open(outPath, 'r+');
+      try {
+        await handle.write(buf, 0, buf.length, expected.offset);
+      } finally {
+        await handle.close();
+      }
+    } catch (err) {
+      log.error(`[orchestrator] Failed to write chunk ${chunkIndex} to ${outPath}:`, err);
+      return false;
     }
+    transfer.receivedChunks.add(chunkIndex);
+    transfer.bytesTransferred += buf.length;
+    this.resumeState.set(transfer.manifest.merkleRoot, new Set(transfer.receivedChunks));
 
     this.emitProgress(transferId, true);
 

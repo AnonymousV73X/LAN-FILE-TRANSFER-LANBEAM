@@ -314,15 +314,22 @@ function escapeHtml(s) {
 // ---------------------------------------------------------------------------
 async function refreshFooter() {
   try {
-    const r = await fetch('/api/state');
-    if (!r.ok) return;
+    const r = await fetch('/api/state', {
+      headers: { 'X-Device-Id': state.deviceId },
+      credentials: 'include',
+    });
+    if (!r.ok) return; // not paired or server not reachable
     const j = await r.json();
+    const el = document.getElementById('wifi-info');
+    if (!el) return;
     const w = j.wifi;
-    if (!w || !w.connected) {
-      document.getElementById('wifi-info').textContent = 'Not connected to WiFi';
+    // Desktop may be on Ethernet — we're still connected via LAN.
+    // Only show network details if we have WiFi info.
+    if (!w || !w.ssid) {
+      el.textContent = 'Connected via LAN';
       return;
     }
-    document.getElementById('wifi-info').textContent = `${w.generation || 'WiFi'} · ${w.band || ''} · ${w.channelWidthMHz || 0}MHz · ${w.phyRateMbps || 0} Mbps`.replace(/\s+/g, ' ').trim();
+    el.textContent = (`${w.generation || 'WiFi'} · ${w.ssid} · ${w.band || ''} · ${w.phyRateMbps || 0} Mbps`).replace(/  +/g, ' ').trim();
   } catch {}
 }
 
