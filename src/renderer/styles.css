@@ -136,14 +136,15 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
-.brand { display: flex; align-items: center; gap: 10px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-icon { display: block; flex-shrink: 0; }
 .brand-icon { color: var(--accent-color); }
 .brand-word { font-weight: 700; color: var(--text-primary); font-size: 18px; letter-spacing: -0.2px; }
 .brand-divider { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
 .brand-tagline { color: var(--text-muted); font-size: 12px; }
 .header-right { display: flex; align-items: center; height: 100%; gap: 16px; }
 .status { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; -webkit-app-region: no-drag; line-height: 1; }
-.status-icon { color: var(--text-muted); flex-shrink: 0; display: flex; align-items: center; }
+.status-icon { color: var(--text-muted); flex-shrink: 0; display: block; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .status-dot-online { background: var(--status-online); box-shadow: 0 0 6px rgba(0, 255, 136, 0.6); }
 .status-dot-offline { background: var(--status-offline); }
@@ -315,27 +316,31 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 16px;
+  padding: 14px 16px;
   display: flex; align-items: center; gap: 12px;
   box-shadow: var(--shadow-card);
   transition: transform 0.15s, border-color 0.15s;
 }
 .device-card:hover { transform: translateY(-1px); border-color: var(--accent-color); }
 .device-icon {
-  width: 36px; height: 36px;
-  border-radius: 8px;
+  width: 40px; height: 40px;
+  border-radius: 10px;
   background: var(--bg-elev-3);
-  display: flex; align-items: center; justify-content: center;
+  display: inline-flex; align-items: center; justify-content: center;
   color: var(--text-secondary);
   flex-shrink: 0;
 }
+.device-icon svg {
+  display: block;
+}
 .device-info { flex: 1; min-width: 0; }
-.device-name { font-weight: 600; color: var(--text-primary); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.device-status { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: var(--status-online); }
+.device-name { font-weight: 600; color: var(--text-primary); font-size: 14px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-status { display: inline-flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 12px; line-height: 1.2; color: var(--status-online); }
 .device-status.offline { color: var(--text-dim); }
 .device-status.offline .status-dot { background: var(--text-dim); }
-.device-tech { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--text-dim); }
-.device-chevron { color: var(--text-dim); flex-shrink: 0; }
+.device-tech { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; font-size: 11px; line-height: 1.2; color: var(--text-dim); }
+.device-tech svg { display: block; flex-shrink: 0; }
+.device-chevron { display: inline-flex; align-items: center; justify-content: center; color: var(--text-dim); flex-shrink: 0; }
 .empty-hint {
   grid-column: 1 / -1;
   color: var(--text-dim);
@@ -558,16 +563,51 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 .bench-row strong { color: var(--accent-color); }
 
-/* ===== Responsive ===== */
-@media (max-width: 1100px) {
+/* ===== Responsive Layout for All Window Dimensions ===== */
+@media (max-width: 1024px) {
   .top-row { grid-template-columns: 1fr; }
-  .transfer-card { grid-template-columns: 1fr; gap: 14px; }
-  .transfer-progress { width: 100%; }
+  .qr-panel {
+    flex-direction: row;
+    justify-content: center;
+    gap: 20px;
+    padding: 16px 20px;
+  }
+  .qr-frame { width: 120px; height: 120px; }
+  .qr-caption { margin-top: 0; text-align: left; }
+  .transfer-card { grid-template-columns: 1fr 1fr; gap: 16px; }
+  .transfer-progress { grid-column: 1 / -1; width: 100%; }
+}
+
+@media (max-width: 768px) {
+  .header { padding: 0 110px 0 16px; }
+  .brand-tagline, .brand-divider { display: none; }
+  .sidebar { width: 56px; padding: 14px 0; }
+  .nav-items { gap: 12px; }
+  .nav-item { width: 38px; height: 38px; }
+  .content { padding: 16px; }
+  .settings-grid { grid-template-columns: 1fr; }
+  .device-cards { grid-auto-columns: minmax(220px, 1fr); }
+  .transfer-card { grid-template-columns: 1fr; gap: 12px; }
   .transfer-speed { align-items: flex-start; }
 }
-@media (max-width: 700px) {
-  .device-cards { grid-auto-columns: 240px; }
-  .settings-grid { grid-template-columns: 1fr; }
+
+@media (max-width: 520px) {
+  .header { height: 48px; padding: 0 90px 0 12px; }
+  .brand-word { font-size: 16px; }
+  .status-text { display: none; }
+  .sidebar { width: 48px; }
+  .nav-item { width: 34px; height: 34px; }
+  .dropzone { padding: 36px 16px; }
+  .dropzone-title { font-size: 15px; }
+  .dropzone-sub { font-size: 12px; }
+  .qr-panel { flex-direction: column; }
+  .qr-caption { text-align: center; }
+  .device-cards {
+    display: flex;
+    flex-direction: column;
+    overflow-x: visible;
+  }
+  .device-card { width: 100%; }
 }
 
 /* ===== Scrollbars ===== */
@@ -606,6 +646,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 .dropdown-arrow {
   color: var(--text-muted);
+  display: block;
+  flex-shrink: 0;
   transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .custom-dropdown.open .dropdown-arrow {

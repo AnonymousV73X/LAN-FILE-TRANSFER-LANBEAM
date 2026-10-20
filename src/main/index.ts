@@ -43,10 +43,10 @@ let baseUrl = '';
 async function createWindow() {
   mainWindow = new BrowserWindow({
     title: 'LANBeam',
-    width: 1280,
-    height: 820,
-    minWidth: 960,
-    minHeight: 640,
+    width: 1040,
+    height: 720,
+    minWidth: 420,
+    minHeight: 480,
     backgroundColor: '#000000',
     titleBarStyle: 'hidden',
     titleBarOverlay:
