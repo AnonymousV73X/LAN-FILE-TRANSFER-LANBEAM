@@ -1,3 +1,8 @@
+function sanitizeRelativePath(relPath: string): string {
+  const parts = relPath.replace(/\\/g, '/').split('/').filter(p => p && p !== '.' && p !== '..');
+  return parts.join(path.sep);
+}
+
 /**
  * LANBeam — transfer orchestrator.
  *
@@ -137,10 +142,11 @@ export class TransferOrchestrator extends EventEmitter {
     // Pre-allocate the output file so all chunk writes can use 'r+' safely,
     // even when parallel chunks arrive out of order.
     // Sanitise fileName to prevent path traversal.
-    const safeName = path.basename(manifest.fileName);
-    const outPath = path.join(outputDir, safeName);
+    const safeRel = sanitizeRelativePath(manifest.fileName);
+    const outPath = path.join(outputDir, safeRel);
+    const fileParentDir = path.dirname(outPath);
     try {
-      await fs.mkdir(outputDir, { recursive: true });
+      await fs.mkdir(fileParentDir, { recursive: true });
       // Only pre-allocate if file doesn't already exist (resume case).
       const existing = await fs.stat(outPath).catch(() => null);
       if (!existing) {
@@ -160,7 +166,7 @@ export class TransferOrchestrator extends EventEmitter {
     const received = resume ? new Set(resume) : new Set<number>();
 
     const transfer: InboundTransfer = {
-      manifest: { ...manifest, fileName: safeName }, // use sanitised name
+      manifest: { ...manifest, fileName: safeRel }, // preserve sanitized relative folder structure
       outputDir,
       peerName,
       receivedChunks: received,

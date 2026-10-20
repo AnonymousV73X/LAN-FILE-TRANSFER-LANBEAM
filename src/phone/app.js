@@ -142,8 +142,35 @@ function bindPicker() {
     fileInput?.click();
   });
 
-  btnFolder?.addEventListener('click', (e) => {
+  btnFolder?.addEventListener('click', async (e) => {
     e.stopPropagation();
+    // Modern File System Access API (Desktop Chrome/Edge/Opera, Chromium on Android where supported)
+    if (window.showDirectoryPicker) {
+      try {
+        const dirHandle = await window.showDirectoryPicker();
+        const files = [];
+        const readDir = async (handle, currentPath) => {
+          for await (const entry of handle.values()) {
+            if (entry.kind === 'file') {
+              const file = await entry.getFile();
+              file.customName = currentPath + '/' + file.name;
+              files.push(file);
+            } else if (entry.kind === 'directory') {
+              await readDir(entry, currentPath + '/' + entry.name);
+            }
+          }
+        };
+        await readDir(dirHandle, dirHandle.name);
+        if (files.length) {
+          enqueueFiles(files);
+          return;
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.warn('showDirectoryPicker failed, falling back to input:', err);
+      }
+    }
+    // Standard directory picker fallback
     folderInput?.click();
   });
 
