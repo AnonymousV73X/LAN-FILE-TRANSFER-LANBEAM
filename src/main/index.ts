@@ -43,10 +43,10 @@ let baseUrl = '';
 async function createWindow() {
   mainWindow = new BrowserWindow({
     title: 'LANBeam',
-    width: 1280,
-    height: 820,
-    minWidth: 960,
-    minHeight: 640,
+    width: 1040,
+    height: 720,
+    minWidth: 420,
+    minHeight: 480,
     backgroundColor: '#000000',
     titleBarStyle: 'hidden',
     titleBarOverlay:
@@ -153,7 +153,7 @@ function registerIpc() {
 
   ipcMain.handle('transfer:pick-files', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      properties: ['openFile', 'multiSelections'],
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
     });
     return result.filePaths;
   });
@@ -169,10 +169,15 @@ function registerIpc() {
   ipcMain.handle('wifi:query', async () => queryWifiInfo());
 
   ipcMain.handle('benchmark:run', async () => {
-    const outDir = path.join(app.getPath('userData'), 'benchmark-results');
-    const results = await runBenchmark(outDir, orchestrator!, store!, undefined);
-    mainWindow?.webContents.send('benchmark:results', results);
-    return results;
+    try {
+      const outDir = path.join(app.getPath('userData'), 'benchmark-results');
+      const results = await runBenchmark(outDir, orchestrator!, store!, undefined);
+      mainWindow?.webContents.send('benchmark:results', results);
+      return results;
+    } catch (err) {
+      log.error('[benchmark] Run failed:', err);
+      throw err;
+    }
   });
 
   ipcMain.handle('app:minimize', () => mainWindow?.minimize());
@@ -205,6 +210,8 @@ async function boot() {
   log.info('LANBeam starting up, version:', APP_VERSION);
   await fs.mkdir(DOWNLOAD_DIR, { recursive: true });
   store = new StateStore();
+  // Dedup persisted paired devices — keeps newest lastSeen per deviceId
+  store.deduplicatePairedDevices();
   pairManager = new PairingManager();
   orchestrator = new TransferOrchestrator(store);
   mdns = new MdnsService();
@@ -238,7 +245,7 @@ async function boot() {
   await buildTray();
 
   // Periodically refresh QR (one-time-use tokens) and update tray.
-  setInterval(() => refreshQr(), 4 * 60 * 1000);
+  setInterval(() => refreshQr(), 15 * 60 * 1000);
 
   mdns.onPeersChanged((peers) => {
     mainWindow?.webContents.send('peers:updated', peers);

@@ -22,9 +22,6 @@
       </div>
       <div class="header-right">
         <div class="status">
-          <svg class="status-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/>
-          </svg>
           <span class="status-dot status-dot-online" id="status-dot"></span>
           <span class="status-text" id="status-text">Connected to Local Network</span>
         </div>
@@ -36,26 +33,26 @@
       <!-- Sidebar -->
       <nav class="sidebar">
         <div class="nav-items">
-          <button class="nav-item active" data-view="home" title="Home">
+          <button class="nav-item active" data-view="home" aria-label="Home">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
               <polyline points="9 22 9 12 15 12 15 22"/>
             </svg>
           </button>
-          <button class="nav-item" data-view="devices" title="Devices">
+          <button class="nav-item" data-view="devices" aria-label="Devices">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
               <line x1="8" y1="21" x2="16" y2="21"/>
               <line x1="12" y1="17" x2="12" y2="21"/>
             </svg>
           </button>
-          <button class="nav-item" data-view="history" title="History">
+          <button class="nav-item" data-view="history" id="nav-history-btn" style="display:none" aria-label="History">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
               <polyline points="12 6 12 12 16 14"/>
             </svg>
           </button>
-          <button class="nav-item" data-view="settings" title="Settings">
+          <button class="nav-item" data-view="settings" aria-label="Settings">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -94,8 +91,8 @@
         </div>
         <p class="qr-caption">Scan to pair with your phone</p>
         <div class="qr-url-row">
-          <input type="text" id="qr-url-text" readonly class="qr-url-input" title="Pairing link" />
-          <button id="qr-copy-btn" class="qr-copy-btn" title="Copy pairing link">Copy</button>
+          <input type="text" id="qr-url-text" readonly class="qr-url-input" aria-label="Pairing link" />
+          <button id="qr-copy-btn" class="qr-copy-btn" aria-label="Copy pairing link">Copy</button>
         </div>
       </div>
     </section>
@@ -180,25 +177,47 @@
           <input type="range" min="1" max="32" step="1" id="setting-streams" />
           <span class="setting-value" id="setting-streams-val">8</span>
         </label>
-        <label class="setting">
+        <div class="setting">
           <span class="setting-label">Compression</span>
-          <select id="setting-compression">
-            <option value="auto">Auto (entropy-based)</option>
-            <option value="on">Always on</option>
-            <option value="off">Always off</option>
-          </select>
-        </label>
-        <label class="setting">
+          <div class="custom-dropdown" id="dropdown-compression" data-value="auto">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">Auto (entropy-based)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item selected" data-value="auto">Auto (entropy-based)</div>
+              <div class="dropdown-item" data-value="on">Always on</div>
+              <div class="dropdown-item" data-value="off">Always off</div>
+            </div>
+          </div>
+        </div>
+        <div class="setting">
           <span class="setting-label">Font</span>
-          <select id="setting-font">
-            <option value="figtree">Figtree (Default)</option>
-            <option value="outfit">Outfit</option>
-            <option value="system">System Default</option>
-          </select>
-        </label>
+          <div class="custom-dropdown" id="dropdown-font" data-value="figtree">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">Figtree (Default)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item selected" data-value="figtree">Figtree (Default)</div>
+              <div class="dropdown-item" data-value="outfit">Outfit</div>
+              <div class="dropdown-item" data-value="system">System Default</div>
+            </div>
+          </div>
+        </div>
         <label class="setting">
           <span class="setting-label">WiFi slow-link warning</span>
-          <input type="checkbox" id="setting-warn" />
+          <label class="custom-switch">
+            <input type="checkbox" id="setting-warn" />
+            <span class="switch-slider"></span>
+          </label>
+        </label>
+        <label class="setting">
+          <span class="setting-label">Show Transfer History tab</span>
+          <label class="custom-switch">
+            <input type="checkbox" id="setting-history" />
+            <span class="switch-slider"></span>
+          </label>
         </label>
       </div>
       <h3 class="page-subtitle">Accent color</h3>

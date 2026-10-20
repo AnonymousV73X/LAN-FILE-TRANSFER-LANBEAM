@@ -1,3 +1,58 @@
+
+function initCustomDropdown(id, onChange) {
+  const root = document.getElementById(id);
+  if (!root) return;
+  const trigger = root.querySelector('.dropdown-trigger');
+  const selectedLabel = root.querySelector('.dropdown-selected');
+  const items = root.querySelectorAll('.dropdown-item');
+
+  trigger?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Close other dropdowns
+    document.querySelectorAll('.custom-dropdown.open').forEach(d => {
+      if (d !== root) d.classList.remove('open');
+    });
+    root.classList.toggle('open');
+  });
+
+  items.forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const val = item.dataset.value;
+      root.dataset.value = val;
+      if (selectedLabel) selectedLabel.textContent = item.textContent;
+      items.forEach(it => it.classList.toggle('selected', it === item));
+      root.classList.remove('open');
+      onChange?.(val);
+    });
+  });
+}
+
+document.addEventListener('click', () => {
+  document.querySelectorAll('.custom-dropdown.open').forEach(d => d.classList.remove('open'));
+});
+function updateHistoryNav(show) {
+  let isEnabled;
+  if (typeof show === 'boolean') {
+    isEnabled = show;
+    try { localStorage.setItem('lanbeam:showHistory', show ? 'true' : 'false'); } catch (_) {}
+  } else if (state.settings && typeof state.settings.showHistory === 'boolean') {
+    isEnabled = state.settings.showHistory;
+  } else {
+    try {
+      isEnabled = localStorage.getItem('lanbeam:showHistory') === 'true';
+    } catch (_) {
+      isEnabled = false;
+    }
+  }
+
+  const btn = document.getElementById('nav-history-btn');
+  if (btn) btn.style.display = isEnabled ? 'flex' : 'none';
+  if (!isEnabled && state.view === 'history') {
+    renderView('home');
+  }
+}
+
 /* ==========================================================================
    LANBeam desktop renderer logic.
    - Single-page view swap (Home / Devices / History / Settings) into #content.
@@ -103,12 +158,15 @@ function applyFont(choice) {
 function renderDevices() {
   const host = document.getElementById('device-cards');
   if (!host) return;
-  if (!state.pairedDevices.length) {
-    host.innerHTML = `<div class="empty-hint">No paired devices yet. Scan the QR above with your phone.</div>`;
+  const ONLINE_MS = 30 * 1000;   // 30s = online
+  const now = Date.now();
+  const activeDevices = state.pairedDevices.filter(d => (now - d.lastSeen) < ONLINE_MS).sort((a, b) => b.lastSeen - a.lastSeen);
+  if (!activeDevices.length) {
+    host.innerHTML = `<div class="empty-hint">No active devices online. Scan QR or open LANBeam on your phone.</div>`;
   } else {
-    host.innerHTML = state.pairedDevices.map(d => deviceCardHtml(d, true)).join('');
+    host.innerHTML = activeDevices.map(d => deviceCardHtml(d, true)).join('');
   }
-  const count = state.pairedDevices.filter(d => Date.now() - d.lastSeen < 5 * 60 * 1000).length;
+  const count = activeDevices.length;
   const counter = document.getElementById('device-count');
   if (counter) counter.textContent = `${count} device${count === 1 ? '' : 's'} online`;
 }
@@ -133,24 +191,32 @@ function deviceCardHtml(d, online) {
   `;
 }
 
-function onFilesPicked(files) {
-  // For v1, prompt user to pick a paired peer (or auto-pick first online device).
-  const onlinePeers = state.pairedDevices;
+async function onFilesPicked(files) {
+  const ONLINE_MS = 30 * 1000;
+  const now = Date.now();
+  const onlinePeers = state.pairedDevices.filter(d => (now - d.lastSeen) < ONLINE_MS);
   if (!onlinePeers.length) {
-    alert('No paired devices. Scan the QR with your phone first.');
+    alert('No connected devices online. Please scan the QR code with your phone first.');
     return;
   }
-  // Send the first file to the first peer — UI scaffolding for proper multi-peer picker later.
-  const file = files[0];
   const peer = onlinePeers[0];
-  const fp = file.path || file.name;
-  window.lanbeam.transfer.send({
-    filePath: fp,
-    fileName: file.name,
-    peerHost: peer.host || '127.0.0.1',
-    peerPort: peer.port || 80,
-    transport: 'http',
-  });
+
+  // Send all selected files sequentially / queue
+  for (const file of files) {
+    const fp = file.path || file.name;
+    const name = file.name || (typeof fp === 'string' ? fp.split(/[\\/]/).pop() : 'file');
+    try {
+      await window.lanbeam.transfer.send({
+        filePath: fp,
+        fileName: name,
+        peerHost: peer.host || '127.0.0.1',
+        peerPort: peer.port || 80,
+        transport: 'http',
+      });
+    } catch (err) {
+      console.error('Failed to send file:', name, err);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,17 +282,40 @@ function bindSettings() {
   const chunkVal = document.getElementById('setting-chunk-val');
   const streams = document.getElementById('setting-streams');
   const streamsVal = document.getElementById('setting-streams-val');
-  const compression = document.getElementById('setting-compression');
-  const fontSelect = document.getElementById('setting-font');
   const warn = document.getElementById('setting-warn');
+  const historyToggle = document.getElementById('setting-history');
   if (state.settings) {
     if (chunk) chunk.value = String(state.settings.chunkSizeMB);
     if (chunkVal) chunkVal.textContent = String(state.settings.chunkSizeMB);
     if (streams) streams.value = String(state.settings.maxParallelStreams);
     if (streamsVal) streamsVal.textContent = String(state.settings.maxParallelStreams);
-    if (compression) compression.value = state.settings.compressionMode;
-    if (fontSelect) fontSelect.value = state.settings.fontChoice || 'figtree';
     if (warn) warn.checked = !state.settings.warnOnSlowWifi;
+    const isHistEnabled = typeof state.settings.showHistory === 'boolean'
+      ? state.settings.showHistory
+      : (localStorage.getItem('lanbeam:showHistory') === 'true');
+    if (historyToggle) historyToggle.checked = isHistEnabled;
+
+    // Set initial custom dropdown selections
+    const compRoot = document.getElementById('dropdown-compression');
+    if (compRoot) {
+      const mode = state.settings.compressionMode || 'auto';
+      compRoot.dataset.value = mode;
+      const it = compRoot.querySelector(`.dropdown-item[data-value="${mode}"]`);
+      if (it) {
+        compRoot.querySelector('.dropdown-selected').textContent = it.textContent;
+        compRoot.querySelectorAll('.dropdown-item').forEach(el => el.classList.toggle('selected', el === it));
+      }
+    }
+    const fontRoot = document.getElementById('dropdown-font');
+    if (fontRoot) {
+      const font = state.settings.fontChoice || 'figtree';
+      fontRoot.dataset.value = font;
+      const it = fontRoot.querySelector(`.dropdown-item[data-value="${font}"]`);
+      if (it) {
+        fontRoot.querySelector('.dropdown-selected').textContent = it.textContent;
+        fontRoot.querySelectorAll('.dropdown-item').forEach(el => el.classList.toggle('selected', el === it));
+      }
+    }
   }
   chunk?.addEventListener('input', () => {
     if (chunkVal) chunkVal.textContent = chunk.value;
@@ -236,14 +325,20 @@ function bindSettings() {
     if (streamsVal) streamsVal.textContent = streams.value;
     window.lanbeam.settings.update({ maxParallelStreams: parseInt(streams.value, 10) });
   });
-  compression?.addEventListener('change', () => {
-    window.lanbeam.settings.update({ compressionMode: compression.value });
+
+  initCustomDropdown('dropdown-compression', (val) => {
+    window.lanbeam.settings.update({ compressionMode: val });
   });
-  fontSelect?.addEventListener('change', () => {
-    applyFont(fontSelect.value);
+  initCustomDropdown('dropdown-font', (val) => {
+    applyFont(val);
   });
   warn?.addEventListener('change', () => {
     window.lanbeam.settings.update({ warnOnSlowWifi: warn.checked });
+  });
+  historyToggle?.addEventListener('change', () => {
+    const show = historyToggle.checked;
+    window.lanbeam.settings.update({ showHistory: show });
+    updateHistoryNav(show);
   });
 
   // Settings swatches sync
@@ -349,6 +444,7 @@ function bindTransferEvents() {
     } else if (ev.type === 'inbound:complete' || ev.type === 'outbound:complete') {
       finalizeTransferCard(ev.result);
       state.history = [ev.result, ...state.history];
+      if (state.view === 'history') renderHistory();
     } else if (ev.type === 'inbound:accept-request') {
       // Show a toast/notice; v1 auto-accepts paired devices.
       console.log('[lanbeam] inbound transfer requested:', ev);
@@ -359,7 +455,18 @@ function bindTransferEvents() {
 function updateTransferCard(p) {
   const section = document.getElementById('transfer-section');
   if (!section) return;
+  if (hideTransferTimeout) { clearTimeout(hideTransferTimeout); hideTransferTimeout = null; }
   section.style.display = 'block';
+  if (p.fileName) {
+    const nameEl = document.getElementById('transfer-name');
+    if (nameEl) nameEl.textContent = p.fileName;
+  }
+  const metaEl = document.getElementById('transfer-meta');
+  if (metaEl) {
+    const peer = p.peerName || 'Remote device';
+    const totalSize = p.totalBytes > 0 ? formatBytes(p.totalBytes) : '—';
+    metaEl.textContent = `${totalSize} · from ${peer}`;
+  }
   const pct = p.totalBytes > 0 ? (p.bytesTransferred / p.totalBytes) * 100 : 0;
   const fill = document.getElementById('progress-fill');
   if (fill) fill.style.width = `${pct.toFixed(1)}%`;
@@ -375,11 +482,18 @@ function updateTransferCard(p) {
   state.currentTransfer = p;
 }
 
+let hideTransferTimeout = null;
+
 function finalizeTransferCard(result) {
   const stats = document.getElementById('progress-stats');
   if (stats) stats.textContent = `Complete · ${result.averageThroughputMbps.toFixed(1)} Mbps avg · integrity ${result.integrityOk ? 'OK' : 'FAILED'}`;
   const fill = document.getElementById('progress-fill');
   if (fill) fill.style.width = `100%`;
+  if (hideTransferTimeout) clearTimeout(hideTransferTimeout);
+  hideTransferTimeout = setTimeout(() => {
+    const section = document.getElementById('transfer-section');
+    if (section) section.style.display = 'none';
+  }, 3500);
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +597,12 @@ async function boot() {
 
   // Settings updates
   window.lanbeam.settings.onUpdated((s) => {
-    state.settings = s;
+    state.settings = { ...state.settings, ...s };
+    if (typeof s.showHistory === 'boolean') {
+      updateHistoryNav(s.showHistory);
+    } else {
+      updateHistoryNav();
+    }
   });
 
   // Load initial state
@@ -498,6 +617,10 @@ async function boot() {
       }
       applyAccent(s.settings?.accentColor || '#00E5FF', []);
       applyFont(s.settings?.fontChoice || 'figtree');
+      const initialShowHistory = typeof s.settings?.showHistory === 'boolean'
+        ? s.settings.showHistory
+        : (localStorage.getItem('lanbeam:showHistory') === 'true');
+      updateHistoryNav(initialShowHistory);
 
       if (state.view === 'home') {
         renderQr();
@@ -508,18 +631,11 @@ async function boot() {
     console.error('Failed to get initial state:', err);
   }
 
-  // Refresh QR if not already present
-  if (!state.qr) {
-    try {
-      const qrData = await window.lanbeam.pairing.refreshQr();
-      if (qrData && typeof qrData === 'object') {
-        state.qr = qrData;
-        if (state.view === 'home') renderQr();
-      }
-    } catch (err) {
-      console.error('Failed to refresh QR:', err);
-    }
-  }
+  // Re-render device cards every 20s so online/offline status updates automatically.
+  setInterval(() => {
+    if (state.view === 'home') renderDevices();
+    if (state.view === 'devices') renderDevicesView();
+  }, 20000);
 }
 
 boot().catch(err => console.error('renderer boot failed:', err));

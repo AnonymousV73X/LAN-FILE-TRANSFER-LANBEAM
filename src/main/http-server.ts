@@ -186,6 +186,21 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         sendJson(res, 200, { ok: true, version: '1.0.0' });
         return;
       }
+      if (pathname === '/api/heartbeat' && req.method === 'POST') {
+        // touchPairedDevice already called above — just ack and notify renderer
+        opts.onDevicePaired?.(opts.store.pairedDevices.find(d => d.deviceId === deviceId) ?? { deviceId } as any);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (pathname === '/api/transfer/pending' && req.method === 'GET') {
+        const pending = Array.from((opts.orchestrator as any).outbound?.values() ?? []).map((t: any) => ({
+          transferId: t.manifest.fileId,
+          fileName: t.manifest.fileName,
+          fileSize: t.manifest.fileSize,
+        }));
+        sendJson(res, 200, { transfers: pending });
+        return;
+      }
       if (pathname === '/api/state' && req.method === 'GET') {
         const wifi = await queryWifiInfo();
         const paired = opts.store.pairedDevices;

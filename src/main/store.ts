@@ -26,6 +26,7 @@ export interface Settings {
   quicPort: number;             // default 0 = random
   httpPort: number;             // default 0 = random
   fontChoice?: 'figtree' | 'outfit' | 'system'; // default 'figtree'
+  showHistory?: boolean;        // default false
   acceptUnpairedAuto: boolean;  // FORCED false in security layer; UI can show but not set
 }
 
@@ -57,6 +58,7 @@ const DEFAULT_SETTINGS: Settings = {
   warnOnSlowWifi: true,
   accentColor: '#00E5FF',
   fontChoice: 'figtree',
+  showHistory: false,
   quicPort: 0,
   httpPort: 0,
   acceptUnpairedAuto: false, // hard-locked
@@ -95,8 +97,19 @@ export class StateStore {
 
   addPairedDevice(device: PairedDevice): void {
     const devices = this.store.get('pairedDevices').filter(d => d.deviceId !== device.deviceId);
-    devices.push(device);
+    devices.unshift(device);
     this.store.set('pairedDevices', devices);
+  }
+
+  /** Remove any duplicate deviceIds, keeping the one with the newest lastSeen. */
+  deduplicatePairedDevices(): void {
+    const seen = new Map<string, PairedDevice>();
+    for (const d of this.store.get('pairedDevices')) {
+      const existing = seen.get(d.deviceId);
+      if (!existing || d.lastSeen > existing.lastSeen) seen.set(d.deviceId, d);
+    }
+    const list = [...seen.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+    this.store.set('pairedDevices', list);
   }
 
   removePairedDevice(deviceId: string): void {
