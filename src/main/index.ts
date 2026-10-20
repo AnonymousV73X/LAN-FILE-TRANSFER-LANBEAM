@@ -169,10 +169,15 @@ function registerIpc() {
   ipcMain.handle('wifi:query', async () => queryWifiInfo());
 
   ipcMain.handle('benchmark:run', async () => {
-    const outDir = path.join(app.getPath('userData'), 'benchmark-results');
-    const results = await runBenchmark(outDir, orchestrator!, store!, undefined);
-    mainWindow?.webContents.send('benchmark:results', results);
-    return results;
+    try {
+      const outDir = path.join(app.getPath('userData'), 'benchmark-results');
+      const results = await runBenchmark(outDir, orchestrator!, store!, undefined);
+      mainWindow?.webContents.send('benchmark:results', results);
+      return results;
+    } catch (err) {
+      log.error('[benchmark] Run failed:', err);
+      throw err;
+    }
   });
 
   ipcMain.handle('app:minimize', () => mainWindow?.minimize());

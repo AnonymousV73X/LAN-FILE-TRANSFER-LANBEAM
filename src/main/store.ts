@@ -26,6 +26,7 @@ export interface Settings {
   quicPort: number;             // default 0 = random
   httpPort: number;             // default 0 = random
   fontChoice?: 'figtree' | 'outfit' | 'system'; // default 'figtree'
+  showHistory?: boolean;        // default false
   acceptUnpairedAuto: boolean;  // FORCED false in security layer; UI can show but not set
 }
 
@@ -57,6 +58,7 @@ const DEFAULT_SETTINGS: Settings = {
   warnOnSlowWifi: true,
   accentColor: '#00E5FF',
   fontChoice: 'figtree',
+  showHistory: false,
   quicPort: 0,
   httpPort: 0,
   acceptUnpairedAuto: false, // hard-locked

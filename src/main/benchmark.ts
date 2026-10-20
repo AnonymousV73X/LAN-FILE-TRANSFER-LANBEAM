@@ -37,9 +37,8 @@ export interface BenchmarkResult {
 }
 
 const DEFAULT_SPECS: BenchmarkSpec[] = [
-  { sizeMB: 64, mode: 'random', label: '64MB-random' },
-  { sizeMB: 64, mode: 'mixed', label: '64MB-mixed' },
-  { sizeMB: 256, mode: 'mixed', label: '256MB-mixed' },
+  { sizeMB: 16, mode: 'random', label: '16MB-random' },
+  { sizeMB: 32, mode: 'mixed', label: '32MB-mixed' },
 ];
 
 export async function runBenchmark(

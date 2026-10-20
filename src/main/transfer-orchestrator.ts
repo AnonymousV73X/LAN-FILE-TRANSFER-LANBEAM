@@ -35,6 +35,11 @@ const ALREADY_COMPRESSED_EXT = new Set([
   '.woff', '.woff2',
 ]);
 
+export interface ThroughputSample {
+  time: number;
+  bytes: number;
+}
+
 export interface InboundTransfer {
   manifest: FileManifest;
   outputDir: string;
@@ -43,7 +48,8 @@ export interface InboundTransfer {
   failedChunks: number[];            // chunks that needed retransmission
   bytesTransferred: number;
   startedAt: number;
-  lastThroughputSamples: number[];   // last 30 throughput samples (Mbps)
+  samples: ThroughputSample[];       // timestamped byte checkpoints for sliding window
+  lastThroughputSamples: number[];   // smoothed speed history (Mbps) for sparkline
   lastSampleAt: number;
   lastSampleBytes: number;
   paused: boolean;
@@ -56,6 +62,7 @@ export interface OutboundTransfer {
   peerName?: string;
   bytesTransferred: number;
   startedAt: number;
+  samples: ThroughputSample[];
   lastThroughputSamples: number[];
   lastSampleAt: number;
   lastSampleBytes: number;
@@ -168,6 +175,7 @@ export class TransferOrchestrator extends EventEmitter {
       failedChunks: [],
       bytesTransferred: 0,
       startedAt: Date.now(),
+      samples: [{ time: Date.now(), bytes: 0 }],
       lastThroughputSamples: [],
       lastSampleAt: Date.now(),
       lastSampleBytes: 0,
@@ -253,29 +261,42 @@ export class TransferOrchestrator extends EventEmitter {
     const transfer = inbound ? this.inbound.get(transferId) : this.outbound.get(transferId);
     if (!transfer) return;
     const now = Date.now();
-    const elapsed = Math.max(0.001, (now - transfer.lastSampleAt) / 1000);
-    const bytesDelta = transfer.bytesTransferred - transfer.lastSampleBytes;
-    const instantMbps = (bytesDelta * 8) / 1_000_000 / elapsed;
 
-    transfer.lastThroughputSamples.push(instantMbps);
-    // Keep ~3 seconds of history (assuming samples every ~100-300ms)
-    if (transfer.lastThroughputSamples.length > 15) transfer.lastThroughputSamples.shift();
+    // Record this checkpoint (now, current bytes)
+    if (!transfer.samples) transfer.samples = [{ time: transfer.startedAt, bytes: 0 }];
+    transfer.samples.push({ time: now, bytes: transfer.bytesTransferred });
 
-    transfer.lastSampleAt = now;
-    transfer.lastSampleBytes = transfer.bytesTransferred;
+    // Prune samples older than 3.5 seconds
+    const WINDOW_MS = 3000; // 3-second sliding window
+    while (transfer.samples.length > 2 && (now - transfer.samples[0].time) > 3500) {
+      transfer.samples.shift();
+    }
 
-    // Rolling window average over 2.5 - 3s
-    const windowAvgMbps = transfer.lastThroughputSamples.reduce((a, b) => a + b, 0) / Math.max(1, transfer.lastThroughputSamples.length);
-    const totalElapsedSec = Math.max(0.001, (now - transfer.startedAt) / 1000);
+    // Calculate throughput across the sliding window
+    const oldest = transfer.samples[0];
+    const windowElapsedSec = Math.max(0.1, (now - oldest.time) / 1000);
+    const windowBytes = Math.max(0, transfer.bytesTransferred - oldest.bytes);
+    const windowThroughputMbps = (windowBytes * 8) / 1_000_000 / windowElapsedSec;
+
+    // Total elapsed fallback for early transfer phase (< 1s)
+    const totalElapsedSec = Math.max(0.1, (now - transfer.startedAt) / 1000);
     const overallAvgMbps = (transfer.bytesTransferred * 8) / 1_000_000 / totalElapsedSec;
 
-    // Smooth speed: blended moving window to remove sudden spikes
-    const stableMbps = transfer.lastThroughputSamples.length < 3 ? overallAvgMbps : windowAvgMbps;
+    // Use window speed if window is at least 1s wide, otherwise use overall speed
+    const currentSpeedMbps = (now - oldest.time >= 1000) ? windowThroughputMbps : overallAvgMbps;
+
+    // Only append to sparkline if at least 150ms passed since last sample to avoid duplicates
+    if (now - transfer.lastSampleAt >= 150) {
+      transfer.lastThroughputSamples.push(Math.round(currentSpeedMbps * 10) / 10);
+      if (transfer.lastThroughputSamples.length > 30) transfer.lastThroughputSamples.shift();
+      transfer.lastSampleAt = now;
+      transfer.lastSampleBytes = transfer.bytesTransferred;
+    }
 
     const totalBytes = transfer.manifest.fileSize;
     const bytesTransferred = transfer.bytesTransferred;
     const remainingBytes = Math.max(0, totalBytes - bytesTransferred);
-    const etaMs = stableMbps > 0 ? (remainingBytes * 8) / 1_000_000 / stableMbps * 1000 : 0;
+    const etaMs = currentSpeedMbps > 0 ? (remainingBytes * 8) / 1_000_000 / currentSpeedMbps * 1000 : 0;
 
     const progress: TransferProgress = {
       fileId: transferId,
@@ -283,7 +304,7 @@ export class TransferOrchestrator extends EventEmitter {
       peerName: transfer.peerName || this.peerNameForInbound,
       bytesTransferred,
       totalBytes,
-      throughputMbps: stableMbps,
+      throughputMbps: Math.round(currentSpeedMbps * 10) / 10,
       chunkRetries: 'failedChunks' in transfer ? transfer.failedChunks.length : 0,
       etaMs,
       sparkline: transfer.lastThroughputSamples.slice(),
@@ -360,6 +381,7 @@ export class TransferOrchestrator extends EventEmitter {
       peerName,
       bytesTransferred: 0,
       startedAt: Date.now(),
+      samples: [{ time: Date.now(), bytes: 0 }],
       lastThroughputSamples: [],
       lastSampleAt: Date.now(),
       lastSampleBytes: 0,

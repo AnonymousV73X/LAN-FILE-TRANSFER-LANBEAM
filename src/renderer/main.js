@@ -1,3 +1,11 @@
+function updateHistoryNav(show) {
+  const btn = document.getElementById('nav-history-btn');
+  if (btn) btn.style.display = show ? 'flex' : 'none';
+  if (!show && state.view === 'history') {
+    renderView('home');
+  }
+}
+
 /* ==========================================================================
    LANBeam desktop renderer logic.
    - Single-page view swap (Home / Devices / History / Settings) into #content.
@@ -103,16 +111,15 @@ function applyFont(choice) {
 function renderDevices() {
   const host = document.getElementById('device-cards');
   if (!host) return;
-  const ONLINE_MS = 30 * 1000;   // 30s = online (phone heartbeats every 15s)
-  const RECENT_MS = 24 * 60 * 60 * 1000; // 24h = show at all; older = hidden
+  const ONLINE_MS = 30 * 1000;   // 30s = online
   const now = Date.now();
-  const recentDevices = state.pairedDevices.filter(d => now - d.lastSeen < RECENT_MS).sort((a, b) => b.lastSeen - a.lastSeen);
-  if (!recentDevices.length) {
-    host.innerHTML = `<div class="empty-hint">No paired devices yet. Scan the QR above with your phone.</div>`;
+  const activeDevices = state.pairedDevices.filter(d => (now - d.lastSeen) < ONLINE_MS).sort((a, b) => b.lastSeen - a.lastSeen);
+  if (!activeDevices.length) {
+    host.innerHTML = `<div class="empty-hint">No active devices online. Scan QR or open LANBeam on your phone.</div>`;
   } else {
-    host.innerHTML = recentDevices.map(d => deviceCardHtml(d, now - d.lastSeen < ONLINE_MS)).join('');
+    host.innerHTML = activeDevices.map(d => deviceCardHtml(d, true)).join('');
   }
-  const count = recentDevices.filter(d => now - d.lastSeen < ONLINE_MS).length;
+  const count = activeDevices.length;
   const counter = document.getElementById('device-count');
   if (counter) counter.textContent = `${count} device${count === 1 ? '' : 's'} online`;
 }
@@ -223,6 +230,7 @@ function bindSettings() {
   const compression = document.getElementById('setting-compression');
   const fontSelect = document.getElementById('setting-font');
   const warn = document.getElementById('setting-warn');
+  const historyToggle = document.getElementById('setting-history');
   if (state.settings) {
     if (chunk) chunk.value = String(state.settings.chunkSizeMB);
     if (chunkVal) chunkVal.textContent = String(state.settings.chunkSizeMB);
@@ -231,6 +239,7 @@ function bindSettings() {
     if (compression) compression.value = state.settings.compressionMode;
     if (fontSelect) fontSelect.value = state.settings.fontChoice || 'figtree';
     if (warn) warn.checked = !state.settings.warnOnSlowWifi;
+    if (historyToggle) historyToggle.checked = !!state.settings.showHistory;
   }
   chunk?.addEventListener('input', () => {
     if (chunkVal) chunkVal.textContent = chunk.value;
@@ -248,6 +257,11 @@ function bindSettings() {
   });
   warn?.addEventListener('change', () => {
     window.lanbeam.settings.update({ warnOnSlowWifi: warn.checked });
+  });
+  historyToggle?.addEventListener('change', () => {
+    const show = historyToggle.checked;
+    window.lanbeam.settings.update({ showHistory: show });
+    updateHistoryNav(show);
   });
 
   // Settings swatches sync
@@ -506,6 +520,7 @@ async function boot() {
   // Settings updates
   window.lanbeam.settings.onUpdated((s) => {
     state.settings = s;
+    updateHistoryNav(!!s.showHistory);
   });
 
   // Load initial state
@@ -520,6 +535,7 @@ async function boot() {
       }
       applyAccent(s.settings?.accentColor || '#00E5FF', []);
       applyFont(s.settings?.fontChoice || 'figtree');
+      updateHistoryNav(!!s.settings?.showHistory);
 
       if (state.view === 'home') {
         renderQr();
