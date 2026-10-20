@@ -106,7 +106,7 @@ function renderDevices() {
   const ONLINE_MS = 30 * 1000;   // 30s = online (phone heartbeats every 15s)
   const RECENT_MS = 24 * 60 * 60 * 1000; // 24h = show at all; older = hidden
   const now = Date.now();
-  const recentDevices = state.pairedDevices.filter(d => now - d.lastSeen < RECENT_MS);
+  const recentDevices = state.pairedDevices.filter(d => now - d.lastSeen < RECENT_MS).sort((a, b) => b.lastSeen - a.lastSeen);
   if (!recentDevices.length) {
     host.innerHTML = `<div class="empty-hint">No paired devices yet. Scan the QR above with your phone.</div>`;
   } else {

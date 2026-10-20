@@ -95,7 +95,7 @@ export class StateStore {
 
   addPairedDevice(device: PairedDevice): void {
     const devices = this.store.get('pairedDevices').filter(d => d.deviceId !== device.deviceId);
-    devices.push(device);
+    devices.unshift(device);
     this.store.set('pairedDevices', devices);
   }
 
@@ -106,7 +106,8 @@ export class StateStore {
       const existing = seen.get(d.deviceId);
       if (!existing || d.lastSeen > existing.lastSeen) seen.set(d.deviceId, d);
     }
-    this.store.set('pairedDevices', [...seen.values()]);
+    const list = [...seen.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+    this.store.set('pairedDevices', list);
   }
 
   removePairedDevice(deviceId: string): void {

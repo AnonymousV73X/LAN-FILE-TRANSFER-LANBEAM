@@ -82,11 +82,23 @@ export interface CoreApi {
 // ----------------------------------------------------------------------------
 function loadNative(): CoreApi | null {
   try {
-    // napi-rs emits index.js + index.node next to package.json in native/.
+    const nativePath = path.join(__dirname, '..', '..', 'native', 'index.node');
+    // Check if the binary actually exists
+    require('fs').accessSync(nativePath);
     const mod = require(path.join(__dirname, '..', '..', 'native', 'index.js'));
+    // Verify it's not the stub
+    if (typeof mod.hashChunk === 'function') {
+      try {
+        mod.hashChunk(Buffer.from('test'));
+        return mod as CoreApi;
+      } catch (e: any) {
+        if (e.message?.includes('native core not built')) {
+          return null;
+        }
+      }
+    }
     return mod as CoreApi;
-  } catch (err) {
-    console.warn('[lanbeam-core] native module not available, using TypeScript shim. Build with `npm run build:native` for full speed.', (err as Error).message);
+  } catch {
     return null;
   }
 }
