@@ -365,6 +365,10 @@ function updateTransferCard(p) {
   if (!section) return;
   if (hideTransferTimeout) { clearTimeout(hideTransferTimeout); hideTransferTimeout = null; }
   section.style.display = 'block';
+  if (p.fileName) {
+    const nameEl = document.getElementById('transfer-name');
+    if (nameEl) nameEl.textContent = p.fileName;
+  }
   const pct = p.totalBytes > 0 ? (p.bytesTransferred / p.totalBytes) * 100 : 0;
   const fill = document.getElementById('progress-fill');
   if (fill) fill.style.width = `${pct.toFixed(1)}%`;

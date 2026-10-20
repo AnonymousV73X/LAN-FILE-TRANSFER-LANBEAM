@@ -223,6 +223,8 @@ async function pump() {
       createdAt: Date.now(),
     };
 
+    next.status = 'sending';
+    renderQueue();
     // POST manifest to start the transfer (receiver allocates a transfer slot)
     const startResp = await fetch('/api/transfer/start', {
       method: 'POST',
@@ -342,4 +344,75 @@ async function refreshFooter() {
   bindPicker();
   refreshFooter();
   setInterval(refreshFooter, 10_000);
+  setInterval(checkIncomingTransfers, 3000);
+  checkIncomingTransfers();
 })();
+
+
+// ---------------------------------------------------------------------------
+// Poll and download incoming transfers from desktop (laptop -> phone)
+// ---------------------------------------------------------------------------
+async function checkIncomingTransfers() {
+  if (!state.paired) return;
+  try {
+    const res = await fetch('/api/transfer/pending', {
+      headers: { 'X-Device-Id': state.deviceId },
+      credentials: 'include',
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const receivedSec = document.getElementById('received');
+    const receivedList = document.getElementById('received-list');
+    if (!data.transfers || data.transfers.length === 0) {
+      if (receivedSec) receivedSec.style.display = 'none';
+      return;
+    }
+    if (receivedSec) receivedSec.style.display = 'block';
+    if (receivedList) {
+      receivedList.innerHTML = data.transfers.map(t => `
+        <div class="file-row" style="display:flex; justify-content:space-between; align-items:center; padding:12px; margin-bottom:8px; background:rgba(255,255,255,0.05); border-radius:8px;">
+          <div>
+            <div style="font-weight:600; font-size:14px;">${escapeHtml(t.fileName)}</div>
+            <div style="font-size:12px; color:#888;">${formatBytes(t.fileSize)}</div>
+          </div>
+          <button onclick="downloadIncoming('${t.transferId}', '${encodeURIComponent(t.fileName)}')" style="background:#00E5FF; color:#000; border:none; border-radius:6px; padding:6px 14px; font-weight:600; cursor:pointer;">
+            Download
+          </button>
+        </div>
+      `).join('');
+    }
+  } catch {}
+}
+
+async function downloadIncoming(transferId, encodedName) {
+  const fileName = decodeURIComponent(encodedName);
+  toast('Downloading ' + fileName + '...');
+  try {
+    const mRes = await fetch(`/api/transfer/${transferId}/manifest`, {
+      headers: { 'X-Device-Id': state.deviceId },
+      credentials: 'include',
+    });
+    if (!mRes.ok) throw new Error('Failed to get manifest');
+    const manifest = await mRes.json();
+    const blobs = [];
+    for (let i = 0; i < manifest.chunks.length; i++) {
+      const cRes = await fetch(`/api/transfer/${transferId}/chunk/${i}`, {
+        headers: { 'X-Device-Id': state.deviceId },
+        credentials: 'include',
+      });
+      if (!cRes.ok) throw new Error(`Chunk ${i} download failed`);
+      const chunkBuf = await cRes.arrayBuffer();
+      blobs.push(chunkBuf);
+    }
+    const finalBlob = new Blob(blobs);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(finalBlob);
+    a.download = manifest.fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast(fileName + ' downloaded!');
+  } catch (err) {
+    toast('Download failed: ' + err.message);
+  }
+}

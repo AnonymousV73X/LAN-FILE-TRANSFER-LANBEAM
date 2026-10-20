@@ -37,6 +37,7 @@ export interface FileManifest {
 
 export interface TransferProgress {
   fileId: string;
+  fileName?: string;
   bytesTransferred: number;
   totalBytes: number;
   throughputMbps: number;

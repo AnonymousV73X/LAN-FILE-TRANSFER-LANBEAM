@@ -250,9 +250,15 @@ export class TransferOrchestrator extends EventEmitter {
     const transfer = inbound ? this.inbound.get(transferId) : this.outbound.get(transferId);
     if (!transfer) return;
     const now = Date.now();
-    const elapsed = (now - transfer.lastSampleAt) / 1000;
+    const elapsed = Math.max(0.001, (now - transfer.lastSampleAt) / 1000);
     const bytesDelta = transfer.bytesTransferred - transfer.lastSampleBytes;
-    const mbps = elapsed > 0 ? (bytesDelta * 8) / 1_000_000 / elapsed : 0;
+    // Instantaneous rate from this window
+    const instantMbps = (bytesDelta * 8) / 1_000_000 / elapsed;
+    // Overall average rate
+    const totalElapsedSec = Math.max(0.001, (now - transfer.startedAt) / 1000);
+    const overallAvgMbps = (transfer.bytesTransferred * 8) / 1_000_000 / totalElapsedSec;
+    // Use smoothed realistic speed
+    const mbps = elapsed < 0.05 ? overallAvgMbps : instantMbps;
     transfer.lastThroughputSamples.push(mbps);
     if (transfer.lastThroughputSamples.length > 30) transfer.lastThroughputSamples.shift();
     transfer.lastSampleAt = now;
@@ -264,6 +270,7 @@ export class TransferOrchestrator extends EventEmitter {
     const etaMs = avgThroughput > 0 ? (remainingBytes * 8) / 1_000_000 / avgThroughput * 1000 : 0;
     const progress: TransferProgress = {
       fileId: transferId,
+      fileName: transfer.manifest.fileName,
       bytesTransferred,
       totalBytes,
       throughputMbps: mbps,
