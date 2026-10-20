@@ -38,6 +38,7 @@ const ALREADY_COMPRESSED_EXT = new Set([
 export interface InboundTransfer {
   manifest: FileManifest;
   outputDir: string;
+  peerName?: string;
   receivedChunks: Set<number>;       // confirmed-verified chunk indices
   failedChunks: number[];            // chunks that needed retransmission
   bytesTransferred: number;
@@ -52,6 +53,7 @@ export interface OutboundTransfer {
   manifest: FileManifest;
   filePath: string;
   peer: { host: string; port: number; transport: 'quic' | 'http' };
+  peerName?: string;
   bytesTransferred: number;
   startedAt: number;
   lastThroughputSamples: number[];
@@ -161,6 +163,7 @@ export class TransferOrchestrator extends EventEmitter {
     const transfer: InboundTransfer = {
       manifest: { ...manifest, fileName: safeName }, // use sanitised name
       outputDir,
+      peerName,
       receivedChunks: received,
       failedChunks: [],
       bytesTransferred: 0,
@@ -252,28 +255,35 @@ export class TransferOrchestrator extends EventEmitter {
     const now = Date.now();
     const elapsed = Math.max(0.001, (now - transfer.lastSampleAt) / 1000);
     const bytesDelta = transfer.bytesTransferred - transfer.lastSampleBytes;
-    // Instantaneous rate from this window
     const instantMbps = (bytesDelta * 8) / 1_000_000 / elapsed;
-    // Overall average rate
-    const totalElapsedSec = Math.max(0.001, (now - transfer.startedAt) / 1000);
-    const overallAvgMbps = (transfer.bytesTransferred * 8) / 1_000_000 / totalElapsedSec;
-    // Use smoothed realistic speed
-    const mbps = elapsed < 0.05 ? overallAvgMbps : instantMbps;
-    transfer.lastThroughputSamples.push(mbps);
-    if (transfer.lastThroughputSamples.length > 30) transfer.lastThroughputSamples.shift();
+
+    transfer.lastThroughputSamples.push(instantMbps);
+    // Keep ~3 seconds of history (assuming samples every ~100-300ms)
+    if (transfer.lastThroughputSamples.length > 15) transfer.lastThroughputSamples.shift();
+
     transfer.lastSampleAt = now;
     transfer.lastSampleBytes = transfer.bytesTransferred;
+
+    // Rolling window average over 2.5 - 3s
+    const windowAvgMbps = transfer.lastThroughputSamples.reduce((a, b) => a + b, 0) / Math.max(1, transfer.lastThroughputSamples.length);
+    const totalElapsedSec = Math.max(0.001, (now - transfer.startedAt) / 1000);
+    const overallAvgMbps = (transfer.bytesTransferred * 8) / 1_000_000 / totalElapsedSec;
+
+    // Smooth speed: blended moving window to remove sudden spikes
+    const stableMbps = transfer.lastThroughputSamples.length < 3 ? overallAvgMbps : windowAvgMbps;
+
     const totalBytes = transfer.manifest.fileSize;
     const bytesTransferred = transfer.bytesTransferred;
     const remainingBytes = Math.max(0, totalBytes - bytesTransferred);
-    const avgThroughput = transfer.lastThroughputSamples.reduce((a, b) => a + b, 0) / Math.max(1, transfer.lastThroughputSamples.length);
-    const etaMs = avgThroughput > 0 ? (remainingBytes * 8) / 1_000_000 / avgThroughput * 1000 : 0;
+    const etaMs = stableMbps > 0 ? (remainingBytes * 8) / 1_000_000 / stableMbps * 1000 : 0;
+
     const progress: TransferProgress = {
       fileId: transferId,
       fileName: transfer.manifest.fileName,
+      peerName: transfer.peerName || this.peerNameForInbound,
       bytesTransferred,
       totalBytes,
-      throughputMbps: mbps,
+      throughputMbps: stableMbps,
       chunkRetries: 'failedChunks' in transfer ? transfer.failedChunks.length : 0,
       etaMs,
       sparkline: transfer.lastThroughputSamples.slice(),
@@ -347,6 +357,7 @@ export class TransferOrchestrator extends EventEmitter {
       manifest,
       filePath,
       peer,
+      peerName,
       bytesTransferred: 0,
       startedAt: Date.now(),
       lastThroughputSamples: [],

@@ -369,6 +369,12 @@ function updateTransferCard(p) {
     const nameEl = document.getElementById('transfer-name');
     if (nameEl) nameEl.textContent = p.fileName;
   }
+  const metaEl = document.getElementById('transfer-meta');
+  if (metaEl) {
+    const peer = p.peerName || 'Remote device';
+    const totalSize = p.totalBytes > 0 ? formatBytes(p.totalBytes) : '—';
+    metaEl.textContent = `${totalSize} · from ${peer}`;
+  }
   const pct = p.totalBytes > 0 ? (p.bytesTransferred / p.totalBytes) * 100 : 0;
   const fill = document.getElementById('progress-fill');
   if (fill) fill.style.width = `${pct.toFixed(1)}%`;
