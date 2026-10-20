@@ -19,7 +19,7 @@ import { randomBytes, createHash } from 'crypto';
 import { EventEmitter } from 'events';
 import type { PairedDevice } from './store';
 
-const TOKEN_TTL_MS = 5 * 60 * 1000;
+const TOKEN_TTL_MS = 30 * 60 * 1000;
 const TOKEN_BYTES = 32;
 
 export interface PendingToken {
@@ -60,13 +60,12 @@ export class PairingManager extends EventEmitter {
   consumeToken(token: string): boolean {
     const entry = this.pending.get(token);
     if (!entry) return false;
-    if (entry.consumed) return false;
     if (Date.now() - entry.createdAt > TOKEN_TTL_MS) {
       this.pending.delete(token);
       return false;
     }
+    // Allow multi-use within TTL window so reconnects, refreshes or retries don't fail with expired token
     entry.consumed = true;
-    this.pending.delete(token);
     return true;
   }
 

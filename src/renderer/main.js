@@ -513,14 +513,13 @@ async function boot() {
   }
 
   // Refresh QR if not already present
+  // Keep initial QR or get state
   if (!state.qr) {
     try {
-      const qrData = await window.lanbeam.pairing.refreshQr();
-      if (qrData && typeof qrData === 'object') {
-        state.qr = qrData;
-        if (state.view === 'home') renderQr();
-      }
-    } catch (err) {
+      const s = await window.lanbeam.state.get();
+      if (s?.qr) { state.qr = s.qr; renderQr(); }
+    } catch {}
+  } catch (err) {
       console.error('Failed to refresh QR:', err);
     }
   }

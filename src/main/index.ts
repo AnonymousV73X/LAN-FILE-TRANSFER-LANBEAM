@@ -240,7 +240,7 @@ async function boot() {
   await buildTray();
 
   // Periodically refresh QR (one-time-use tokens) and update tray.
-  setInterval(() => refreshQr(), 4 * 60 * 1000);
+  setInterval(() => refreshQr(), 15 * 60 * 1000);
 
   mdns.onPeersChanged((peers) => {
     mainWindow?.webContents.send('peers:updated', peers);
