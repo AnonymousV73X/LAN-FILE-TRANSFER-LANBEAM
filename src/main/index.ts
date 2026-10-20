@@ -153,7 +153,7 @@ function registerIpc() {
 
   ipcMain.handle('transfer:pick-files', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      properties: ['openFile', 'multiSelections'],
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
     });
     return result.filePaths;
   });

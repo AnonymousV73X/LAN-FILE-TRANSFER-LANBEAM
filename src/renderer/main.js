@@ -1,3 +1,36 @@
+
+function initCustomDropdown(id, onChange) {
+  const root = document.getElementById(id);
+  if (!root) return;
+  const trigger = root.querySelector('.dropdown-trigger');
+  const selectedLabel = root.querySelector('.dropdown-selected');
+  const items = root.querySelectorAll('.dropdown-item');
+
+  trigger?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Close other dropdowns
+    document.querySelectorAll('.custom-dropdown.open').forEach(d => {
+      if (d !== root) d.classList.remove('open');
+    });
+    root.classList.toggle('open');
+  });
+
+  items.forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const val = item.dataset.value;
+      root.dataset.value = val;
+      if (selectedLabel) selectedLabel.textContent = item.textContent;
+      items.forEach(it => it.classList.toggle('selected', it === item));
+      root.classList.remove('open');
+      onChange?.(val);
+    });
+  });
+}
+
+document.addEventListener('click', () => {
+  document.querySelectorAll('.custom-dropdown.open').forEach(d => d.classList.remove('open'));
+});
 function updateHistoryNav(show) {
   const btn = document.getElementById('nav-history-btn');
   if (btn) btn.style.display = show ? 'flex' : 'none';
@@ -144,24 +177,32 @@ function deviceCardHtml(d, online) {
   `;
 }
 
-function onFilesPicked(files) {
-  // For v1, prompt user to pick a paired peer (or auto-pick first online device).
-  const onlinePeers = state.pairedDevices;
+async function onFilesPicked(files) {
+  const ONLINE_MS = 30 * 1000;
+  const now = Date.now();
+  const onlinePeers = state.pairedDevices.filter(d => (now - d.lastSeen) < ONLINE_MS);
   if (!onlinePeers.length) {
-    alert('No paired devices. Scan the QR with your phone first.');
+    alert('No connected devices online. Please scan the QR code with your phone first.');
     return;
   }
-  // Send the first file to the first peer — UI scaffolding for proper multi-peer picker later.
-  const file = files[0];
   const peer = onlinePeers[0];
-  const fp = file.path || file.name;
-  window.lanbeam.transfer.send({
-    filePath: fp,
-    fileName: file.name,
-    peerHost: peer.host || '127.0.0.1',
-    peerPort: peer.port || 80,
-    transport: 'http',
-  });
+
+  // Send all selected files sequentially / queue
+  for (const file of files) {
+    const fp = file.path || file.name;
+    const name = file.name || (typeof fp === 'string' ? fp.split(/[\\/]/).pop() : 'file');
+    try {
+      await window.lanbeam.transfer.send({
+        filePath: fp,
+        fileName: name,
+        peerHost: peer.host || '127.0.0.1',
+        peerPort: peer.port || 80,
+        transport: 'http',
+      });
+    } catch (err) {
+      console.error('Failed to send file:', name, err);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,8 +268,6 @@ function bindSettings() {
   const chunkVal = document.getElementById('setting-chunk-val');
   const streams = document.getElementById('setting-streams');
   const streamsVal = document.getElementById('setting-streams-val');
-  const compression = document.getElementById('setting-compression');
-  const fontSelect = document.getElementById('setting-font');
   const warn = document.getElementById('setting-warn');
   const historyToggle = document.getElementById('setting-history');
   if (state.settings) {
@@ -236,10 +275,30 @@ function bindSettings() {
     if (chunkVal) chunkVal.textContent = String(state.settings.chunkSizeMB);
     if (streams) streams.value = String(state.settings.maxParallelStreams);
     if (streamsVal) streamsVal.textContent = String(state.settings.maxParallelStreams);
-    if (compression) compression.value = state.settings.compressionMode;
-    if (fontSelect) fontSelect.value = state.settings.fontChoice || 'figtree';
     if (warn) warn.checked = !state.settings.warnOnSlowWifi;
     if (historyToggle) historyToggle.checked = !!state.settings.showHistory;
+
+    // Set initial custom dropdown selections
+    const compRoot = document.getElementById('dropdown-compression');
+    if (compRoot) {
+      const mode = state.settings.compressionMode || 'auto';
+      compRoot.dataset.value = mode;
+      const it = compRoot.querySelector(`.dropdown-item[data-value="${mode}"]`);
+      if (it) {
+        compRoot.querySelector('.dropdown-selected').textContent = it.textContent;
+        compRoot.querySelectorAll('.dropdown-item').forEach(el => el.classList.toggle('selected', el === it));
+      }
+    }
+    const fontRoot = document.getElementById('dropdown-font');
+    if (fontRoot) {
+      const font = state.settings.fontChoice || 'figtree';
+      fontRoot.dataset.value = font;
+      const it = fontRoot.querySelector(`.dropdown-item[data-value="${font}"]`);
+      if (it) {
+        fontRoot.querySelector('.dropdown-selected').textContent = it.textContent;
+        fontRoot.querySelectorAll('.dropdown-item').forEach(el => el.classList.toggle('selected', el === it));
+      }
+    }
   }
   chunk?.addEventListener('input', () => {
     if (chunkVal) chunkVal.textContent = chunk.value;
@@ -249,11 +308,12 @@ function bindSettings() {
     if (streamsVal) streamsVal.textContent = streams.value;
     window.lanbeam.settings.update({ maxParallelStreams: parseInt(streams.value, 10) });
   });
-  compression?.addEventListener('change', () => {
-    window.lanbeam.settings.update({ compressionMode: compression.value });
+
+  initCustomDropdown('dropdown-compression', (val) => {
+    window.lanbeam.settings.update({ compressionMode: val });
   });
-  fontSelect?.addEventListener('change', () => {
-    applyFont(fontSelect.value);
+  initCustomDropdown('dropdown-font', (val) => {
+    applyFont(val);
   });
   warn?.addEventListener('change', () => {
     window.lanbeam.settings.update({ warnOnSlowWifi: warn.checked });

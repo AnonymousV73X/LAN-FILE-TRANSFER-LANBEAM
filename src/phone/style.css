@@ -128,3 +128,38 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   transition: opacity 0.2s;
 }
 .toast.show { opacity: 1; }
+
+.picker-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  width: 100%;
+  max-width: 320px;
+}
+.btn-action {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-action:active {
+  transform: scale(0.97);
+}
+.btn-action:hover {
+  background: var(--bg-elev-1);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-folder {
+  border-color: rgba(0, 229, 255, 0.4);
+}

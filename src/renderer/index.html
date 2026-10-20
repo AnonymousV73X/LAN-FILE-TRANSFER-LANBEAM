@@ -180,22 +180,34 @@
           <input type="range" min="1" max="32" step="1" id="setting-streams" />
           <span class="setting-value" id="setting-streams-val">8</span>
         </label>
-        <label class="setting">
+        <div class="setting">
           <span class="setting-label">Compression</span>
-          <select id="setting-compression">
-            <option value="auto">Auto (entropy-based)</option>
-            <option value="on">Always on</option>
-            <option value="off">Always off</option>
-          </select>
-        </label>
-        <label class="setting">
+          <div class="custom-dropdown" id="dropdown-compression" data-value="auto">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">Auto (entropy-based)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item selected" data-value="auto">Auto (entropy-based)</div>
+              <div class="dropdown-item" data-value="on">Always on</div>
+              <div class="dropdown-item" data-value="off">Always off</div>
+            </div>
+          </div>
+        </div>
+        <div class="setting">
           <span class="setting-label">Font</span>
-          <select id="setting-font">
-            <option value="figtree">Figtree (Default)</option>
-            <option value="outfit">Outfit</option>
-            <option value="system">System Default</option>
-          </select>
-        </label>
+          <div class="custom-dropdown" id="dropdown-font" data-value="figtree">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">Figtree (Default)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item selected" data-value="figtree">Figtree (Default)</div>
+              <div class="dropdown-item" data-value="outfit">Outfit</div>
+              <div class="dropdown-item" data-value="system">System Default</div>
+            </div>
+          </div>
+        </div>
         <label class="setting">
           <span class="setting-label">WiFi slow-link warning</span>
           <label class="custom-switch">
