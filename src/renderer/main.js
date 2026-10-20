@@ -512,18 +512,6 @@ async function boot() {
     console.error('Failed to get initial state:', err);
   }
 
-  // Refresh QR if not already present
-  // Keep initial QR or get state
-  if (!state.qr) {
-    try {
-      const s = await window.lanbeam.state.get();
-      if (s?.qr) { state.qr = s.qr; renderQr(); }
-    } catch {}
-  } catch (err) {
-      console.error('Failed to refresh QR:', err);
-    }
-  }
-
   // Re-render device cards every 20s so online/offline status updates automatically.
   setInterval(() => {
     if (state.view === 'home') renderDevices();
