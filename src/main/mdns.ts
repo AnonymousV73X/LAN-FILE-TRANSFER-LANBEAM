@@ -33,24 +33,48 @@ export class MdnsService {
   private listeners = new Set<(peers: DiscoveredPeer[]) => void>();
   private ownDeviceId = '';
 
-  advertise(port: number, deviceId: string, appVersion: string): void {
+  /**
+   * Advertise the HTTP server.
+   *
+   * `host` is the PERMANENT hostname published as an A record (e.g.
+   * 'lanbeam.local'). bonjour-service answers mDNS A queries for that name
+   * with every non-internal IPv4 of this machine, so phones can keep using
+   * http://<host>:<port> forever — even after DHCP hands the desktop a new
+   * IP. That stable URL is what makes Remember-Me reconnects survive months:
+   * bookmarks / home-screen icons never go stale again.
+   */
+  advertise(port: number, deviceId: string, appVersion: string, host?: string): void {
     this.ownDeviceId = deviceId;
     if (this.published) {
       this.published.stop();
       this.published = null;
     }
+    const publishedHost = host || hostname();
     const svc = this.bonjour.publish({
       name: `lanbeam-${deviceId.slice(0, 8)}`,
+      host: publishedHost,
       type: SERVICE_TYPE,
       protocol: SERVICE_PROTOCOL,
       port,
       txt: {
-        host: hostname(),
+        host: publishedHost,
         deviceId,
         appVersion,
       },
     });
     this.published = svc;
+  }
+
+  /**
+   * Resolve once the published service is actually on the wire (first
+   * announce round sent). bonjour emits 'up' on the Service; if it already
+   * announced before this call, fires immediately. Used by the boot sequence
+   * to decide between the permanent mDNS URL and the direct-IP fallback.
+   */
+  onPublished(cb: () => void): void {
+    if (!this.published) return;
+    if (this.published.published) { cb(); return; }
+    this.published.once('up', cb);
   }
 
   browse(): void {

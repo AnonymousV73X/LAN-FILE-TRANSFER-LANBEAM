@@ -6,6 +6,10 @@ directories:
   buildResources: assets
 files:
   - dist/**/*
+  # The HTTP server serves the phone web UI from src/phone at runtime
+  # (PHONE_DIR = __dirname/../../src/phone) — without this the packaged app
+  # 404s on the QR pairing link.
+  - src/phone/**/*
   - native/index.js
   - native/index.d.ts
   - native/*.node

@@ -15,6 +15,11 @@ export interface PairedDevice {
   fingerprint: string;    // Public-key fingerprint (currently a sha256 of pairing secret)
   pairedAt: number;        // Unix ms
   lastSeen: number;        // Unix ms
+  // Live network identity — captured from the HTTP layer at pairing time and
+  // refreshed on every authenticated request (heartbeat / polls). Used by the
+  // device info popup so the user always sees accurate connection details.
+  ip?: string;             // Last-known LAN IPv4 of the device
+  userAgent?: string;      // Browser User-Agent (phone browsers only)
 }
 
 export interface Settings {
@@ -27,7 +32,18 @@ export interface Settings {
   httpPort: number;             // default 0 = random
   fontChoice?: 'figtree' | 'outfit' | 'system'; // default 'figtree'
   showHistory?: boolean;        // default false
+  // UI scale for high-DPI panels. 'auto' picks a sensible default from the
+  // primary display's resolution + OS scale factor (200% on 4K, 175% on 2K
+  // when the OS itself is at 100%, 100% otherwise). User can override.
+  uiScale?: 'auto' | '1.0' | '1.25' | '1.5' | '1.75' | '2.0';
   acceptUnpairedAuto: boolean;  // FORCED false in security layer; UI can show but not set
+  // How the desktop handles incoming files from paired devices:
+  //   'auto' — land straight in Downloads with a toast (previous behaviour)
+  //   'ask'  — hold the transfer and pop an Accept / Decline card first
+  receiveMode?: 'auto' | 'ask';   // default 'auto'
+  // How throughput is DISPLAYED on both ends (PC + mirrored to the phone via
+  // /api/state): megabits, megabytes, gigabytes or gigabits per second.
+  speedUnit?: 'mbps' | 'mBps' | 'gBps' | 'gbps';   // default 'mBps'
 }
 
 export interface TransferHistoryEntry {
@@ -36,6 +52,7 @@ export interface TransferHistoryEntry {
   fileSize: number;
   direction: 'in' | 'out';
   peerName: string;
+  filePath?: string;
   startedAt: number;
   completedAt: number;
   durationMs: number;
@@ -59,9 +76,12 @@ const DEFAULT_SETTINGS: Settings = {
   accentColor: '#00E5FF',
   fontChoice: 'figtree',
   showHistory: false,
+  uiScale: 'auto',
   quicPort: 0,
-  httpPort: 0,
+  httpPort: 54321,
   acceptUnpairedAuto: false, // hard-locked
+  receiveMode: 'auto',
+  speedUnit: 'mBps',
 };
 
 export class StateStore {
@@ -96,9 +116,50 @@ export class StateStore {
   }
 
   addPairedDevice(device: PairedDevice): void {
-    const devices = this.store.get('pairedDevices').filter(d => d.deviceId !== device.deviceId);
+    const now = Date.now();
+    const devices = this.store
+      .get('pairedDevices')
+      .filter(d => d.deviceId !== device.deviceId)
+      // Zombie cleanup — a phone whose browser wiped its storage (iOS 7-day
+      // eviction, Opera Mini, private mode) comes back with a NEW deviceId
+      // and re-pairs. Without this rule the roster fills up with dozens of
+      // offline clones of the same physical phone (the "38 spam devices"
+      // bug). Any OFFLINE record with the same name that hasn't been seen
+      // for 2+ minutes is a ghost of this very device — drop it. Online
+      // records are never touched, so two identical phones in active use
+      // can't erase each other.
+      .filter(d => {
+        if (d.name !== device.name || d.kind !== device.kind) return true;
+        const offlineMs = now - (d.lastSeen || 0);
+        return offlineMs < 2 * 60 * 1000;
+      });
     devices.unshift(device);
     this.store.set('pairedDevices', devices);
+  }
+
+  /** Drop records that haven't been seen for `maxAgeMs` (default 90 days). */
+  prunePairedDevices(maxAgeMs = 90 * 24 * 60 * 60 * 1000): number {
+    const cutoff = Date.now() - maxAgeMs;
+    const devices = this.store.get('pairedDevices');
+    const kept = devices.filter(d => (d.lastSeen || 0) >= cutoff);
+    const removed = devices.length - kept.length;
+    if (removed > 0) this.store.set('pairedDevices', kept);
+    return removed;
+  }
+
+  /**
+   * One-tap roster cleanup: remove every device that is not currently
+   * online (lastSeen older than `onlineMs`, default 2 minutes). The Devices
+   * page "Clear offline" button calls this — instantly clears walls of
+   * stale entries without touching live devices.
+   */
+  clearOfflineDevices(onlineMs = 2 * 60 * 1000): { removed: number; kept: PairedDevice[] } {
+    const cutoff = Date.now() - onlineMs;
+    const devices = this.store.get('pairedDevices');
+    const kept = devices.filter(d => (d.lastSeen || 0) >= cutoff);
+    const removed = devices.length - kept.length;
+    if (removed > 0) this.store.set('pairedDevices', kept);
+    return { removed, kept };
   }
 
   /** Remove any duplicate deviceIds, keeping the one with the newest lastSeen. */
@@ -116,9 +177,18 @@ export class StateStore {
     this.store.set('pairedDevices', this.store.get('pairedDevices').filter(d => d.deviceId !== deviceId));
   }
 
-  touchPairedDevice(deviceId: string): void {
+  touchPairedDevice(deviceId: string, meta?: { ip?: string; userAgent?: string }): void {
     const devices = this.store.get('pairedDevices').map(d =>
-      d.deviceId === deviceId ? { ...d, lastSeen: Date.now() } : d
+      d.deviceId === deviceId
+        ? {
+            ...d,
+            lastSeen: Date.now(),
+            // Keep the live network identity fresh so the device popup always
+            // reflects the current connection, even if DHCP re-assigns the IP.
+            ip: meta?.ip ?? d.ip,
+            userAgent: meta?.userAgent ?? d.userAgent,
+          }
+        : d
     );
     this.store.set('pairedDevices', devices);
   }

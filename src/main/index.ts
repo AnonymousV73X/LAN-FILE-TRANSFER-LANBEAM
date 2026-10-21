@@ -13,7 +13,7 @@
  *   5. Open the main window; register IPC handlers.
  *   6. If --benchmark flag: run benchmark and exit.
  */
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import QRCode from 'qrcode';
@@ -39,8 +39,46 @@ let pairManager: PairingManager | null = null;
 let store: StateStore | null = null;
 let httpPort = 0;
 let baseUrl = '';
+let lanBeamIpUrl = '';   // direct-IP fallback link shown under the QR
+
+// ---------------------------------------------------------------------------
+// UI scaling — supports 4K / 2K high-DPI panels.
+//   - When uiScale is 'auto' we look at the primary display's logical DPI
+//     and physical pixel resolution. If the OS reports scaleFactor <= 1.25
+//     (i.e. user hasn't already applied OS-level scaling), we apply 200%
+//     on 4K panels (>= 3840px wide) and 175% on 2K panels (>= 2560px wide)
+//     so the app doesn't look tiny. Otherwise we leave it at 100%.
+//   - When the user explicitly picks a value, we just apply it.
+//   - Re-applies on display-metrics-changed so dragging the window between
+//     monitors with different DPI keeps the UI readable.
+// ---------------------------------------------------------------------------
+type UiScaleChoice = 'auto' | '1.0' | '1.25' | '1.5' | '1.75' | '2.0';
+
+function resolveUiScale(choice: UiScaleChoice | undefined, display?: Electron.Display): number {
+  if (choice && choice !== 'auto') return parseFloat(choice);
+  const disp = display ?? screen.getPrimaryDisplay();
+  const osScale = disp?.scaleFactor ?? 1;
+  const widthPx = (disp?.bounds?.width ?? 0) * osScale; // physical px
+  if (osScale <= 1.25 && widthPx >= 3840) return 2.0;       // 4K panel, OS at 100%
+  if (osScale <= 1.25 && widthPx >= 2560) return 1.75;      // 2K panel, OS at 100%
+  if (osScale > 1.25 && widthPx >= 3840) return 1.5;        // 4K panel, OS already scaled
+  return 1.0;
+}
+
+function applyUiScale(win: BrowserWindow | null, choice: UiScaleChoice | undefined): number {
+  if (!win || win.isDestroyed()) return 1.0;
+  const factor = resolveUiScale(choice);
+  try {
+    win.webContents.setZoomFactor(factor);
+  } catch (err) {
+    log.warn('[uiScale] Failed to apply zoom factor', factor, err);
+  }
+  return factor;
+}
 
 async function createWindow() {
+  // App icon — window + taskbar (the packaged exe icon comes from build/).
+  const windowIcon = path.join(__dirname, '..', '..', 'assets', 'icon.png');
   mainWindow = new BrowserWindow({
     title: 'LANBeam',
     width: 1040,
@@ -48,6 +86,7 @@ async function createWindow() {
     minWidth: 420,
     minHeight: 480,
     backgroundColor: '#000000',
+    icon: windowIcon,
     titleBarStyle: 'hidden',
     titleBarOverlay:
       process.platform === 'win32'
@@ -69,6 +108,17 @@ async function createWindow() {
 
   await mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   if (process.env.NODE_ENV === 'development') mainWindow.webContents.openDevTools({ mode: 'detach' });
+
+  // Apply UI scaling for high-DPI panels (4K / 2K). Safe no-op on 1080p.
+  applyUiScale(mainWindow, store?.settings?.uiScale as UiScaleChoice | undefined);
+
+  // Re-apply when the user moves the window between monitors with different DPI,
+  // or when the OS display metrics change (resolution / scale slider).
+  screen.on('display-metrics-changed', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      applyUiScale(mainWindow, store?.settings?.uiScale as UiScaleChoice | undefined);
+    }
+  });
 
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -126,6 +176,8 @@ function registerIpc() {
     localDeviceId: store!.localDeviceId,
     httpUrl: baseUrl,
     httpPort,
+    ipUrl: lanBeamIpUrl,            // direct-IP fallback for the QR panel
+    permanentHost: PERMANENT_HOST,
     nativeCoreAvailable: isNativeCoreAvailable(),
     appVersion: APP_VERSION,
     qr: currentQr,
@@ -133,6 +185,10 @@ function registerIpc() {
 
   ipcMain.handle('settings:update', (_e, patch) => {
     const next = store!.updateSettings(patch);
+    // Live-apply UI scale changes without requiring an app restart.
+    if (Object.prototype.hasOwnProperty.call(patch, 'uiScale')) {
+      applyUiScale(mainWindow, next.uiScale as UiScaleChoice | undefined);
+    }
     mainWindow?.webContents.send('settings:updated', next);
     return next;
   });
@@ -147,8 +203,26 @@ function registerIpc() {
     return true;
   });
 
-  ipcMain.handle('transfer:send', async (_e, opts: { filePath: string; fileName: string; peerHost: string; peerPort: number; transport: 'quic' | 'http' }) => {
-    return orchestrator!.sendOutbound(opts.filePath, opts.fileName, { host: opts.peerHost, port: opts.peerPort, transport: opts.transport }, opts.peerHost);
+  // One-tap roster cleanup (Devices page button): drop every device that is
+  // offline, keep the live ones. Returns how many ghosts were removed.
+  ipcMain.handle('devices:clear-offline', () => {
+    const { removed, kept } = store!.clearOfflineDevices();
+    mainWindow?.webContents.send('devices:updated', kept);
+    return { removed, devices: kept };
+  });
+
+  ipcMain.handle('transfer:send', async (_e, opts: { filePath: string; fileName: string; peerHost: string; peerPort: number; transport: 'quic' | 'http'; peerName?: string; targetDeviceId?: string }) => {
+    // peerName carries the human device name ("Galaxy S24") so the progress
+    // card says "to Galaxy S24" instead of "from Remote device" / an IP.
+    // targetDeviceId addresses the outbound entry to one specific paired
+    // device (mesh) — the phone's pending list is filtered per device.
+    return orchestrator!.sendOutbound(opts.filePath, opts.fileName, { host: opts.peerHost, port: opts.peerPort, transport: opts.transport }, opts.peerName || opts.peerHost, opts.targetDeviceId);
+  });
+
+  // Receive-mode 'ask': the renderer's Accept / Decline card answers a
+  // held /api/transfer/start request through this IPC.
+  ipcMain.handle('transfer:respond', (_e, requestId: string, accepted: boolean) => {
+    return orchestrator!.respondAcceptance(requestId, accepted);
   });
 
   ipcMain.handle('transfer:pick-files', async () => {
@@ -187,22 +261,151 @@ function registerIpc() {
     if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize();
   });
 
+  // Keep the display awake while the enlarged QR lightbox is open so the
+  // screen never dims or sleeps mid-scan ("max brightness on focus").
+  let qrPowerSaveId: number | null = null;
+  ipcMain.handle('app:power-save', (_e, on: boolean) => {
+    if (on) {
+      if (qrPowerSaveId === null) {
+        qrPowerSaveId = powerSaveBlocker.start('prevent-display-sleep');
+      }
+    } else if (qrPowerSaveId !== null) {
+      powerSaveBlocker.stop(qrPowerSaveId);
+      qrPowerSaveId = null;
+    }
+    return qrPowerSaveId !== null;
+  });
+
+  ipcMain.handle('history:show-in-folder', async (_e, filePathOrName: string) => {
+    try {
+      let targetPath = filePathOrName;
+      if (!targetPath) return false;
+      // If it's not absolute, resolve inside DOWNLOAD_DIR
+      if (!path.isAbsolute(targetPath)) {
+        targetPath = path.join(DOWNLOAD_DIR, targetPath);
+      }
+      try {
+        await fs.access(targetPath);
+        shell.showItemInFolder(targetPath);
+        return true;
+      } catch {
+        // Fallback: check DOWNLOAD_DIR directly with base filename
+        const baseTarget = path.join(DOWNLOAD_DIR, path.basename(filePathOrName));
+        try {
+          await fs.access(baseTarget);
+          shell.showItemInFolder(baseTarget);
+          return true;
+        } catch {
+          // File not found — do NOT open the download folder.
+          // The renderer will surface a friendly "file doesn't exist" toast
+          // so the user knows the file was moved or deleted, instead of
+          // getting a random folder window popping up in their face.
+          return false;
+        }
+      }
+    } catch (err) {
+      log.error('Failed to show item in folder:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('history:open-file', async (_e, filePathOrName: string) => {
+    try {
+      let targetPath = filePathOrName;
+      if (!targetPath) return false;
+      if (!path.isAbsolute(targetPath)) {
+        targetPath = path.join(DOWNLOAD_DIR, targetPath);
+      }
+      try {
+        await fs.access(targetPath);
+        await shell.openPath(targetPath);
+        return true;
+      } catch {
+        const baseTarget = path.join(DOWNLOAD_DIR, path.basename(filePathOrName));
+        try {
+          await fs.access(baseTarget);
+          await shell.openPath(baseTarget);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    } catch (err) {
+      log.error('Failed to open file:', err);
+      return false;
+    }
+  });
+
   // Forward orchestrator events to the renderer
   orchestrator!.on('event', (ev: OrchestratorEvent) => {
     mainWindow?.webContents.send('transfer:event', ev);
   });
 }
 
-function getPrimaryLanIp(): string {
+/**
+ * Best LAN interface picker — ALWAYS prioritise the best available link.
+ *
+ * The old code returned the FIRST non-internal IPv4, which on real machines
+ * is frequently a virtual adapter (WSL / Hyper-V / VMware / Docker / VPN) the
+ * phone can't reach or that tunnels traffic through a slow path. Now every
+ * candidate is scored and the highest wins:
+ *   - virtual adapters are heavily penalised (only used as a last resort)
+ *   - Ethernet and Wi-Fi names get a bonus (EN/de localized hints)
+ *   - home-router subnets (192.168.x, 10.x) outrank 172.16-31.x (Docker-ish)
+ */
+interface LanCandidate { address: string; name: string; score: number }
+
+function pickBestLanIp(): string {
   const ifaces = os.networkInterfaces();
+  const candidates: LanCandidate[] = [];
   for (const name of Object.keys(ifaces)) {
     for (const net of ifaces[name] ?? []) {
-      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.')) {
-        return net.address;
+      if (net.family !== 'IPv4' || net.internal) continue;
+      if (net.address.startsWith('169.254.')) continue; // link-local autoconf
+      let score = 0;
+      const lname = name.toLowerCase();
+      if (/vethernet|wsl|vmware|virtualbox|hyper-v|docker|loopback|tap|tun|vpn|tailscale|zerotier|hamachi/i.test(lname)) {
+        score -= 100; // virtual / overlay adapter — almost never the phone's path
       }
+      if (/wi-?fi|wlan|wireless|无线|wi_fi/.test(lname)) score += 40;
+      if (/ethernet|以太网|local area|eth\d/.test(lname)) score += 60; // wired beats wireless
+      if (net.address.startsWith('192.168.')) score += 20;
+      else if (net.address.startsWith('10.')) score += 12;
+      else if (/^172\.(1[6-9]|2\d|3[01])\./.test(net.address)) score -= 25; // docker-style range
+      candidates.push({ address: net.address, name, score });
     }
   }
-  return '127.0.0.1';
+  if (!candidates.length) return '127.0.0.1';
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0].address;
+}
+
+/**
+ * PERMANENT connect URL.
+ *
+ * The desktop publishes the mDNS A record `lanbeam.local` (see MdnsService),
+ * so http://lanbeam.local:<port> keeps working across DHCP IP changes — the
+ * QR encodes it, and the phone's stored shortcut resolves it for months.
+ * We wait briefly for the mDNS announce to confirm the responder is actually
+ * up; if it isn't (firewall, port busy, broken multicast) we fall back to the
+ * best LAN IP so pairing NEVER breaks — it just loses the permanence bonus.
+ */
+const PERMANENT_HOST = 'lanbeam.local';
+
+function permanentUrlReady(mdns: MdnsService, timeoutMs = 2000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    // bonjour emits 'up' on the published service once the first announce
+    // round went out on the wire — empirical proof the responder works.
+    mdns.onPublished(() => done(true));
+    const timer = setTimeout(() => done(false), timeoutMs);
+  });
 }
 
 async function boot() {
@@ -212,13 +415,18 @@ async function boot() {
   store = new StateStore();
   // Dedup persisted paired devices — keeps newest lastSeen per deviceId
   store.deduplicatePairedDevices();
+  // Age out records unseen for 180 DAYS. Remember-Me must survive months
+  // (user requirement), so the prune horizon is deliberately generous —
+  // half a year of silence is a dead phone, 3 months is just a vacation.
+  const pruned = store.prunePairedDevices(180 * 24 * 60 * 60 * 1000);
+  if (pruned > 0) log.info(`[store] pruned ${pruned} stale paired device record(s)`);
   pairManager = new PairingManager();
   orchestrator = new TransferOrchestrator(store);
   mdns = new MdnsService();
 
-  // Pick ports (0 = OS-assigned random). Allow override via settings.
-  const httpPortConfigured = store.settings.httpPort || 0;
-  const lanIp = getPrimaryLanIp();
+  // Pick ports (default 54321 for permanent bookmarkable URL). Allow override via settings.
+  const httpPortConfigured = store.settings.httpPort || 54321;
+  const lanIp = pickBestLanIp();
 
   const httpHandle = await startHttpServer({
     port: httpPortConfigured,
@@ -230,14 +438,23 @@ async function boot() {
     onDevicePaired: (_device) => {
       mainWindow?.webContents.send('devices:updated', store!.pairedDevices);
     },
+    // Permanent + direct links for /api/state — closures over the module
+    // vars because the definitive port/URL only settle after bind + mDNS.
+    links: () => ({ permanent: baseUrl || undefined, ip: lanBeamIpUrl || undefined }),
   });
   httpPort = httpHandle.port;
-  baseUrl = httpHandle.url;
 
-  // Advertise via mDNS — advertise the HTTP port for the phone path.
+  // Advertise via mDNS with the PERMANENT hostname (lanbeam.local A record).
   // The QUIC port (Rust core) is advertised separately when the core is built.
-  mdns.advertise(httpPort, store.localDeviceId, APP_VERSION);
+  mdns.advertise(httpPort, store.localDeviceId, APP_VERSION, PERMANENT_HOST);
   mdns.browse();
+
+  // The QR / pairing URL: use the direct LAN IP by default so phones never
+  // hit mDNS / .local DNS resolution issues (DNS_PROBE_POSSIBLE).
+  const ipUrl = `http://${lanIp}:${httpPort}`;
+  baseUrl = ipUrl;
+  lanBeamIpUrl = ipUrl;
+  log.info(`[boot] pairing URL: ${baseUrl}`);
 
   await registerIpc();
   await refreshQr();

@@ -54,6 +54,19 @@ export interface TransferComplete {
   averageThroughputMbps: number;
   chunkRetries: number;
   bytesTransferred: number;
+  // Full history-entry fields. The renderer prepends `result` straight into
+  // `state.history`, so without these the next renderHistory() call would
+  // throw on `escapeHtml(undefined)` and the history view would visually
+  // "disappear" (its template fallback "No transfers yet." would remain).
+  // Populated by the orchestrator at the same time it persists to the store,
+  // so the in-memory state and the persisted entry stay consistent.
+  fileName: string;
+  fileSize: number;
+  direction: 'in' | 'out';
+  peerName: string;
+  filePath?: string;
+  startedAt: number;
+  completedAt: number;
 }
 
 export interface CoreApi {

@@ -1,2 +1,0 @@
-netsh wlan set hostednetwork mode=allow ssid=Anonymous_V73X key=###Password0
-netsh wlan start hostednetwork

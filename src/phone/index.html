@@ -2,25 +2,44 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <title>LANBeam</title>
   <link rel="stylesheet" href="/style.css" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2300E5FF'><path d='M13 2L4 14h7l-1 8 9-12h-7l1-8z'/></svg>" />
+  <!-- PWA: the manifest stays available — installing is optional, never nudged -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-title" content="LANBeam" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg>
-      <span>LANBeam</span>
+      <span class="brand-icon-wrap">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+      </span>
+      <span class="brand-word">LANBeam</span>
     </div>
-    <div class="pair-status" id="pair-status">Pairing…</div>
+    <div class="pair-status" id="pair-status">
+      <span class="pair-status-dot"></span>
+      <span class="pair-status-text">Pairing…</span>
+    </div>
   </header>
 
   <main class="main">
     <!-- Pairing banner -->
-    <section class="pair-banner" id="pair-banner" style="display:none">
-      <p>You're about to pair with <strong id="peer-name">this desktop</strong>. Tap below to confirm.</p>
-      <button id="pair-confirm">Pair this device</button>
+    <section class="pair-banner card" id="pair-banner" style="display:none">
+      <div class="pair-banner-icon">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
+      </div>
+      <p class="pair-banner-text">You're about to pair with <strong id="peer-name">this desktop</strong>.</p>
+      <button class="btn-primary" id="pair-confirm">
+        <span>Pair this device</span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+      </button>
     </section>
 
     <!-- Drop / pick files & folders -->
@@ -28,42 +47,65 @@
       <div class="picker-zone" id="picker-zone">
         <input type="file" id="file-input" multiple style="display:none" />
         <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none" />
-        <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="17 8 12 3 7 8"/>
-          <line x1="12" y1="3" x2="12" y2="15"/>
-        </svg>
-        <div class="picker-title">Send files to desktop</div>
-        <div class="picker-sub">Tap buttons below or drop files & folders here</div>
+        <div class="picker-zone-icon">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div class="picker-title">Send to desktop</div>
+        <div class="picker-sub">Tap a button or drop files anywhere</div>
         <div class="picker-actions">
-          <button type="button" class="btn-action" id="btn-pick-files">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            Choose Files
+          <button type="button" class="btn-pill" id="btn-pick-files">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>Files</span>
           </button>
-          <button type="button" class="btn-action btn-folder" id="btn-pick-folder">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            Choose Folder
+          <button type="button" class="btn-pill btn-pill-accent" id="btn-pick-folder">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <span>Folder</span>
           </button>
         </div>
       </div>
     </section>
 
     <!-- Active queue -->
-    <section class="queue" id="queue">
-      <h3>Transfer queue</h3>
-      <div id="queue-list">
-        <div class="empty">No files queued yet.</div>
+    <section class="queue" id="queue" style="display:none">
+      <div class="section-head">
+        <h3>Transfer queue</h3>
+        <span class="section-count" id="queue-count">0</span>
       </div>
+      <div id="queue-list"></div>
     </section>
 
-    <!-- Receive list (desktop→phone) -->
+    <!-- Receive list (desktop→phone / phone→phone via mesh) — files download automatically -->
     <section class="received" id="received" style="display:none">
-      <h3>Received from desktop</h3>
+      <div class="section-head">
+        <h3>Incoming</h3>
+        <span class="section-note">saves automatically</span>
+      </div>
       <div id="received-list"></div>
     </section>
   </main>
 
+  <!-- Send-to bottom sheet — appears ONLY when more than one destination
+       exists. One destination (just the PC) sends immediately, zero extra
+       taps, exactly like the pre-mesh flow. -->
+  <div class="sheet-backdrop" id="sheet-backdrop" style="display:none">
+    <div class="sheet" id="target-sheet" role="dialog" aria-modal="true" aria-label="Choose a device to send to">
+      <div class="sheet-grip" aria-hidden="true"></div>
+      <div class="sheet-title" id="sheet-title">Send</div>
+      <div class="sheet-list" id="sheet-list"></div>
+      <label class="sheet-toggle" id="sheet-keep-row">
+        <span class="sheet-toggle-text">Keep a copy on this PC</span>
+        <span class="sheet-switch"><input type="checkbox" id="sheet-keep" checked /><span class="sheet-switch-slider"></span></span>
+      </label>
+      <button type="button" class="sheet-cancel" id="sheet-cancel">Cancel</button>
+    </div>
+  </div>
+
   <footer class="footer">
+    <span class="footer-dot"></span>
     <span id="wifi-info">—</span>
   </footer>
 

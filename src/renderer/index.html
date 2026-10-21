@@ -22,8 +22,7 @@
       </div>
       <div class="header-right">
         <div class="status">
-          <span class="status-dot status-dot-online" id="status-dot"></span>
-          <span class="status-text" id="status-text">Connected to Local Network</span>
+          
         </div>
       </div>
     </header>
@@ -86,14 +85,22 @@
         <input type="file" id="dropzone-input" multiple style="display:none" />
       </div>
       <div class="qr-panel">
-        <div class="qr-frame">
+        <div class="qr-frame" id="qr-frame" role="button" tabindex="0" aria-label="Enlarge QR code">
           <img id="qr-image" alt="Pair QR code" />
+          <span class="qr-tip" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="11" y1="8.5" x2="11" y2="13.5"/><line x1="8.5" y1="11" x2="13.5" y2="11"/></svg>
+            <span>Click to enlarge</span>
+          </span>
+          <span class="qr-expand-chip" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="11" y1="8.5" x2="11" y2="13.5"/><line x1="8.5" y1="11" x2="13.5" y2="11"/></svg>
+          </span>
         </div>
-        <p class="qr-caption">Scan to pair with your phone</p>
+        <p class="qr-caption">Scan to pair with your phone · click the code to enlarge</p>
         <div class="qr-url-row">
           <input type="text" id="qr-url-text" readonly class="qr-url-input" aria-label="Pairing link" />
           <button id="qr-copy-btn" class="qr-copy-btn" aria-label="Copy pairing link">Copy</button>
         </div>
+        <p class="qr-alt-url" id="qr-alt-url" hidden></p>
       </div>
     </section>
 
@@ -144,8 +151,16 @@
 
   <template id="view-devices">
     <section class="page">
-      <h2 class="page-title">Devices</h2>
-      <p class="page-sub">Paired devices on this LAN. Click a device to send files.</p>
+      <div class="page-head-row">
+        <div>
+          <h2 class="page-title">Devices</h2>
+          <p class="page-sub">Paired devices on this LAN. Click a device to send files.</p>
+        </div>
+        <button type="button" class="ghost-btn" id="clear-offline-btn" title="Remove every offline device from the list">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          <span>Clear offline</span>
+        </button>
+      </div>
       <div class="device-cards" id="device-cards-page"></div>
       <h3 class="page-subtitle">Discovered Peers</h3>
       <div class="device-cards" id="peer-cards-page"></div>
@@ -202,6 +217,51 @@
               <div class="dropdown-item selected" data-value="figtree">Figtree (Default)</div>
               <div class="dropdown-item" data-value="outfit">Outfit</div>
               <div class="dropdown-item" data-value="system">System Default</div>
+            </div>
+          </div>
+        </div>
+        <div class="setting">
+          <span class="setting-label">UI scale (4K / 2K panels)</span>
+          <div class="custom-dropdown" id="dropdown-uiscale" data-value="auto">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">Auto (recommended)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item selected" data-value="auto">Auto (recommended)</div>
+              <div class="dropdown-item" data-value="1.0">100%</div>
+              <div class="dropdown-item" data-value="1.25">125%</div>
+              <div class="dropdown-item" data-value="1.5">150%</div>
+              <div class="dropdown-item" data-value="1.75">175%</div>
+              <div class="dropdown-item" data-value="2.0">200%</div>
+            </div>
+          </div>
+        </div>
+        <div class="setting">
+          <span class="setting-label">Receiving</span>
+          <div class="custom-dropdown" id="dropdown-receive" data-value="auto">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">Auto-receive (instant)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item selected" data-value="auto">Auto-receive (instant)</div>
+              <div class="dropdown-item" data-value="ask">Ask every time</div>
+            </div>
+          </div>
+        </div>
+        <div class="setting">
+          <span class="setting-label">Speed unit</span>
+          <div class="custom-dropdown" id="dropdown-speed" data-value="mBps">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">MB/s (Default)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item" data-value="mbps">Mbps</div>
+              <div class="dropdown-item selected" data-value="mBps">MB/s (Default)</div>
+              <div class="dropdown-item" data-value="gBps">GB/s</div>
+              <div class="dropdown-item" data-value="gbps">Gbps</div>
             </div>
           </div>
         </div>

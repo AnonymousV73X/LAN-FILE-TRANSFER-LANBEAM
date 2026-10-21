@@ -19,6 +19,29 @@ import { randomBytes, createHash } from 'crypto';
 import { EventEmitter } from 'events';
 import type { PairedDevice } from './store';
 
+/**
+ * Remember-Me trusted-device secret.
+ *
+ * At pairing time the desktop issues a random 32-byte `pairSecret` to the
+ * phone. The phone stores it (localStorage + a long-lived cookie) and
+ * presents it on every future connection; the desktop stores ONLY its
+ * sha256 hash — as the device's `fingerprint`. That hash is what makes
+ * the QR a one-time event: afterwards the phone reconnects silently with
+ * deviceId + pairSecret, no scan, no tap, no prompt.
+ */
+export function issuePairSecret(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+export function hashPairSecret(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
+
+/** Legacy devices paired before secrets existed carry sha256(deviceId). */
+export function legacyFingerprintFor(deviceId: string): string {
+  return createHash('sha256').update(deviceId).digest('hex');
+}
+
 const TOKEN_TTL_MS = 30 * 60 * 1000;
 const TOKEN_BYTES = 32;
 

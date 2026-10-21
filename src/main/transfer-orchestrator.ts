@@ -72,6 +72,28 @@ export interface OutboundTransfer {
   lastSampleAt: number;
   lastSampleBytes: number;
   paused: boolean;
+  // HTTP-served transfers (phone pulls /api/transfer/:id/file): the http-server
+  // feeds actual streamed bytes back via reportOutboundServedBytes() so the
+  // desktop progress card is no longer blind, and completeOutboundHttp()
+  // flips this once the response finished — without it the card sat at 0%
+  // forever and the transfer never landed in History.
+  completed: boolean;
+  lastReportAt: number;
+  // ---- Mesh / Remember-Me extensions -------------------------------------
+  // Which paired device this outbound entry is FOR. Present on all new
+  // desktop→phone sends and on relayed phone→phone transfers; the pending
+  // list is filtered per requesting device so phone B never sees a file
+  // addressed to phone A (and vice versa).
+  targetDeviceId?: string;
+  // Relay provenance: the ORIGINAL sender's display name, shown as
+  // "From <originName>" on the receiving phone. peerName on a relay entry is
+  // the TARGET's name (the desktop card reads "to <target>").
+  originName?: string;
+  // Relay policy: when false, the staged copy in the desktop's download dir
+  // is deleted once the receiving phone ACKs the save (zero-trace relay).
+  // Never set for desktop-originated sends — those are the user's own files.
+  keepCopy?: boolean;
+  stagedBy?: 'desktop' | 'relay';
 }
 
 export type OrchestratorEvent =
@@ -246,7 +268,10 @@ export class TransferOrchestrator extends EventEmitter {
 
     // Complete?
     if (transfer.receivedChunks.size === transfer.manifest.totalChunks) {
-      await this.completeInbound(transferId, this.peerNameForInbound);
+      // Prefer the per-transfer peerName captured at startInbound — with
+      // multiple phones sending concurrently, the old shared
+      // this.peerNameForInbound field could mislabel cards / history rows.
+      await this.completeInbound(transferId, transfer.peerName || this.peerNameForInbound);
     }
     return true;
   }
@@ -254,6 +279,106 @@ export class TransferOrchestrator extends EventEmitter {
   // set peerName from caller since receiveChunk doesn't have it
   private peerNameForInbound: string = 'peer';
   setInboundPeerName(name: string) { this.peerNameForInbound = name; }
+
+  // ---------------------------------------------------------------------------
+  // HTTP-served outbound progress (phone pulls /api/transfer/:id/file).
+  // The http-server counts bytes as they stream into the response and feeds
+  // them here, throttled, so the desktop UI shows live progress for
+  // desktop -> phone transfers instead of a frozen 0% card.
+  // ---------------------------------------------------------------------------
+  reportOutboundServedBytes(transferId: string, deltaBytes: number): void {
+    if (deltaBytes <= 0) return;
+    const transfer = this.outbound.get(transferId);
+    if (!transfer || transfer.completed) return;
+    transfer.bytesTransferred += deltaBytes;
+    // Clamp: ranged/retried requests can overcount slightly vs the real size.
+    if (transfer.bytesTransferred > transfer.manifest.fileSize) {
+      transfer.bytesTransferred = transfer.manifest.fileSize;
+    }
+    const now = Date.now();
+    // Throttle UI events to ~8/s — per-TCP-packet would flood the IPC channel.
+    if (now - transfer.lastReportAt >= 120) {
+      transfer.lastReportAt = now;
+      this.emitProgress(transferId, false);
+    }
+  }
+
+  /**
+   * Finish an HTTP-served outbound transfer: the response stream ended
+   * (res 'finish'), so the phone has been handed every byte. Persists a
+   * History entry and emits 'outbound:complete' — this is what makes the
+   * desktop card flip to "Complete · X Mbps avg" and then hide, and what
+   * makes the transfer show up in the History view at all (HTTP transfers
+   * previously never completed).
+   *
+   * Idempotent: ranged/retried downloads can trigger several finish events.
+   */
+  async completeOutboundHttp(transferId: string): Promise<void> {
+    const transfer = this.outbound.get(transferId);
+    if (!transfer || transfer.completed) return;
+    transfer.completed = true;
+    const durationMs = Math.max(1, Date.now() - transfer.startedAt);
+    const avgThroughput = (transfer.bytesTransferred * 8) / 1_000_000 / (durationMs / 1000);
+
+    // Integrity: re-hash the file against its manifest when it's cheap
+    // (<= 256MB). Manifest hashes from our instant manifests are FNV
+    // placeholders — those pass structurally; real hashes get verified.
+    // Above 256MB we fall back to a served-length check (every byte the
+    // sender offered was handed to the socket) — a full re-read would delay
+    // completion by seconds on multi-GB videos.
+    let integrityOk = transfer.bytesTransferred >= transfer.manifest.fileSize;
+    if (transfer.manifest.fileSize <= 256 * 1024 * 1024) {
+      try {
+        const handle = await fs.open(transfer.filePath, 'r');
+        try {
+          for (const chunk of transfer.manifest.chunks) {
+            const buf = Buffer.allocUnsafe(chunk.length);
+            await handle.read(buf, 0, chunk.length, chunk.offset);
+            const isFnvPlaceholder = typeof chunk.hash === 'string' && (chunk.hash.startsWith('fnv0') || (chunk.hash.length === 64 && chunk.hash.slice(0, 8).repeat(8) === chunk.hash));
+            if (!isFnvPlaceholder && !core.verifyChunk(buf, chunk.hash)) { integrityOk = false; break; }
+          }
+        } finally { await handle.close(); }
+      } catch { integrityOk = false; }
+    }
+
+    const peerName = transfer.peerName || transfer.peer.host;
+    const completedAt = Date.now();
+    const enriched: TransferComplete = {
+      fileId: transferId,
+      integrityOk,
+      durationMs,
+      averageThroughputMbps: avgThroughput,
+      chunkRetries: 0,
+      bytesTransferred: transfer.bytesTransferred,
+      fileName: transfer.manifest.fileName,
+      fileSize: transfer.manifest.fileSize,
+      direction: 'out',
+      peerName,
+      filePath: transfer.filePath,
+      startedAt: transfer.startedAt,
+      completedAt,
+    };
+    this.store.addHistory({
+      id: transferId,
+      fileName: transfer.manifest.fileName,
+      fileSize: transfer.manifest.fileSize,
+      direction: 'out',
+      peerName,
+      filePath: transfer.filePath,
+      startedAt: transfer.startedAt,
+      completedAt,
+      durationMs,
+      averageThroughputMbps: avgThroughput,
+      integrityOk,
+      chunkRetries: 0,
+    });
+    // Final 100% event then completion. NOTE: the entry intentionally stays
+    // in the outbound map — the phone still needs the manifest/file until it
+    // POSTs /ack (and download managers may resume with Range requests).
+    // removeOutbound() on ack is what eventually clears it.
+    this.emitProgress(transferId, false);
+    this.emit('event', { type: 'outbound:complete', transferId, result: enriched } satisfies OrchestratorEvent);
+  }
 
   private emitProgress(transferId: string, inbound: boolean) {
     const transfer = inbound ? this.inbound.get(transferId) : this.outbound.get(transferId);
@@ -333,6 +458,8 @@ export class TransferOrchestrator extends EventEmitter {
       } finally { await handle.close(); }
     } catch { integrityOk = false; }
 
+    const outputPath = path.join(transfer.outputDir, transfer.manifest.fileName);
+    const completedAt = Date.now();
     const result: TransferComplete = {
       fileId: transferId,
       integrityOk,
@@ -340,8 +467,20 @@ export class TransferOrchestrator extends EventEmitter {
       averageThroughputMbps: avgThroughput,
       chunkRetries: transfer.failedChunks.length,
       bytesTransferred: transfer.bytesTransferred,
+      // Populate the full history-entry fields so the renderer can prepend
+      // `result` straight into state.history without having to refetch from
+      // the store. This is what made history "disappear" after a transfer —
+      // the partial payload caused escapeHtml(undefined) to throw inside
+      // renderHistory()'s map(), leaving host.innerHTML stuck on the empty
+      // template.
+      fileName: transfer.manifest.fileName,
+      fileSize: transfer.manifest.fileSize,
+      direction: 'in',
+      peerName,
+      filePath: outputPath,
+      startedAt: transfer.startedAt,
+      completedAt,
     };
-    const outputPath = path.join(transfer.outputDir, transfer.manifest.fileName);
 
     this.store.addHistory({
       id: transferId,
@@ -349,8 +488,9 @@ export class TransferOrchestrator extends EventEmitter {
       fileSize: transfer.manifest.fileSize,
       direction: 'in',
       peerName,
+      filePath: outputPath,
       startedAt: transfer.startedAt,
-      completedAt: Date.now(),
+      completedAt,
       durationMs,
       averageThroughputMbps: avgThroughput,
       integrityOk,
@@ -369,6 +509,7 @@ export class TransferOrchestrator extends EventEmitter {
     fileName: string,
     peer: { host: string; port: number; transport: 'quic' | 'http' },
     peerName: string,
+    targetDeviceId?: string,
   ): Promise<string> {
     const manifest = await this.buildManifest(filePath, fileName);
     const transferId = manifest.fileId;
@@ -384,6 +525,10 @@ export class TransferOrchestrator extends EventEmitter {
       lastSampleAt: Date.now(),
       lastSampleBytes: 0,
       paused: false,
+      completed: false,
+      lastReportAt: 0,
+      targetDeviceId,
+      stagedBy: 'desktop',
     };
     this.outbound.set(transferId, transfer);
 
@@ -400,12 +545,15 @@ export class TransferOrchestrator extends EventEmitter {
         });
         await this.completeOutbound(transferId, result, peerName);
       } else {
-        // HTTP parallel-range sender — implemented in http-server.ts because it
-        // needs to talk to the receiver's REST API. We dispatch to it via event.
-        this.emit('event', { type: 'outbound:progress', transferId, progress: {
-          fileId: transferId, bytesTransferred: 0, totalBytes: manifest.fileSize,
-          throughputMbps: 0, chunkRetries: 0, etaMs: 0, sparkline: [],
-        } } satisfies OrchestratorEvent);
+        // HTTP sender: the phone actively pulls the bytes via
+        // /api/transfer/:id/file — the http-server reports streamed bytes back
+        // through reportOutboundServedBytes() and calls completeOutboundHttp()
+        // when the response finishes. Here we only emit the INITIAL progress
+        // event so the desktop card appears immediately with the real file
+        // name, peer name and size (previously this was a bare zero event
+        // without fileName/peerName, which is why the card showed
+        // "— · from Remote device, 0%" for the whole transfer).
+        this.emitProgress(transferId, false);
       }
     } catch (err) {
       this.emit('event', { type: 'outbound:failed', transferId, error: (err as Error).message } satisfies OrchestratorEvent);
@@ -416,22 +564,118 @@ export class TransferOrchestrator extends EventEmitter {
   private async completeOutbound(transferId: string, result: TransferComplete, peerName: string) {
     const transfer = this.outbound.get(transferId);
     if (!transfer) return;
+    const completedAt = Date.now();
+    // Enrich the partial `result` (constructed by the QUIC/HTTP sender) with
+    // the full history-entry fields, mirroring what we persist to the store.
+    // The renderer prepends `result` straight into state.history on the
+    // 'outbound:complete' event — without these fields renderHistory() would
+    // throw on escapeHtml(undefined) and the history view would visually
+    // "disappear" (regressed to the empty-state template).
+    const enriched: TransferComplete = {
+      ...result,
+      fileName: transfer.manifest.fileName,
+      fileSize: transfer.manifest.fileSize,
+      direction: 'out',
+      peerName,
+      filePath: transfer.filePath,
+      startedAt: transfer.startedAt,
+      completedAt,
+    };
     this.store.addHistory({
       id: transferId,
       fileName: transfer.manifest.fileName,
       fileSize: transfer.manifest.fileSize,
       direction: 'out',
       peerName,
+      filePath: transfer.filePath,
       startedAt: transfer.startedAt,
-      completedAt: Date.now(),
+      completedAt,
       durationMs: result.durationMs,
       averageThroughputMbps: result.averageThroughputMbps,
       integrityOk: result.integrityOk,
       chunkRetries: result.chunkRetries,
     });
     this.outbound.delete(transferId);
-    this.emit('event', { type: 'outbound:complete', transferId, result } satisfies OrchestratorEvent);
+    this.emit('event', { type: 'outbound:complete', transferId, result: enriched } satisfies OrchestratorEvent);
   }
+
+  // ---------------------------------------------------------------------------
+  // Mesh relay — phone A → this desktop → phone B (store-and-forward).
+  // The http-server saves phone A's upload exactly like a normal inbound,
+  // then hands the staged file here. Phone B discovers it through the
+  // per-device filtered /api/transfer/pending list and pulls it with the
+  // standard HTTP range path.
+  // ---------------------------------------------------------------------------
+  async createRelayOutbound(
+    filePath: string,
+    fileName: string,
+    target: { deviceId: string; name: string },
+    originName: string,
+    keepCopy: boolean,
+  ): Promise<string> {
+    // Flat name on the receiving phone — any folder structure stays desktop-side.
+    const flatName = path.basename(fileName);
+    const manifest = await this.buildManifest(filePath, flatName);
+    const transferId = manifest.fileId;
+    const transfer: OutboundTransfer = {
+      manifest,
+      filePath,
+      peer: { host: 'lan', port: 0, transport: 'http' },
+      peerName: target.name,          // desktop card reads "to <target>"
+      bytesTransferred: 0,
+      startedAt: Date.now(),
+      samples: [{ time: Date.now(), bytes: 0 }],
+      lastThroughputSamples: [],
+      lastSampleAt: Date.now(),
+      lastSampleBytes: 0,
+      paused: false,
+      completed: false,
+      lastReportAt: 0,
+      targetDeviceId: target.deviceId,
+      originName,                     // receiving phone reads "From <origin>"
+      keepCopy,
+      stagedBy: 'relay',
+    };
+    this.outbound.set(transferId, transfer);
+    this.emitProgress(transferId, false);
+    log.info(`[orchestrator] Relay staged: ${flatName} — ${originName} → ${target.name} (keepCopy=${keepCopy})`);
+    return transferId;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Acceptance decision gate — receiveMode 'ask'. Unlike requestAcceptance()
+  // (fire-and-forget toast event), this HOLDS the caller until the desktop
+  // user answers the Accept / Decline card, or the timeout elapses.
+  // ---------------------------------------------------------------------------
+  private pendingApprovals = new Map<string, { resolve: (v: 'accepted' | 'declined') => void; timer: NodeJS.Timeout }>();
+
+  requestAcceptanceDecision(fileName: string, fileSize: number, peerName: string, timeoutMs = 90_000): { requestId: string; decision: Promise<'accepted' | 'declined' | 'timeout'> } {
+    const requestId = uuidv4();
+    const decision = new Promise<'accepted' | 'declined' | 'timeout'>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.pendingApprovals.delete(requestId)) resolve('timeout');
+      }, timeoutMs);
+      this.pendingApprovals.set(requestId, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        timer,
+      });
+    });
+    // Same event the auto path uses — the renderer decides whether it's a
+    // toast (auto mode) or a full Accept / Decline card (ask mode).
+    this.emit('event', { type: 'inbound:accept-request', fileName, fileSize, peerName, requestId } satisfies OrchestratorEvent);
+    return { requestId, decision };
+  }
+
+  /** Renderer answered the Accept / Decline card. Returns false if stale/unknown. */
+  respondAcceptance(requestId: string, accepted: boolean): boolean {
+    const entry = this.pendingApprovals.get(requestId);
+    if (!entry) return false;
+    this.pendingApprovals.delete(requestId);
+    entry.resolve(accepted ? 'accepted' : 'declined');
+    return true;
+  }
+
+  pendingApprovalCount(): number { return this.pendingApprovals.size; }
 
   // ---------------------------------------------------------------------------
   // Acceptance gate: receiver must explicitly accept before inbound starts.
@@ -447,4 +691,14 @@ export class TransferOrchestrator extends EventEmitter {
   // ---------------------------------------------------------------------------
   getInbound(transferId: string): InboundTransfer | undefined { return this.inbound.get(transferId); }
   getOutbound(transferId: string): OutboundTransfer | undefined { return this.outbound.get(transferId); }
+
+  /**
+   * Drop an outbound transfer from the pending list — called when the phone
+   * acknowledges it saved the file (/api/transfer/:id/ack). Without this the
+   * entry would linger in the map forever and keep re-appearing on the
+   * phone's "From desktop" list after every poll.
+   */
+  removeOutbound(transferId: string): boolean {
+    return this.outbound.delete(transferId);
+  }
 }
