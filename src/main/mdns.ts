@@ -116,6 +116,12 @@ export class MdnsService {
     this.listeners.forEach(l => l(list));
   }
 
+  /** Full teardown incl. multicast sockets — used when the network changes. */
+  destroy(): void {
+    try { this.stop(); } catch {}
+    try { this.bonjour.destroy(); } catch {}
+  }
+
   stop(): void {
     this.published?.stop();
     this.browser?.stop();

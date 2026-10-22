@@ -23,7 +23,7 @@ export function getLogPath(): string { return logPath; }
 function write(level: string, ...args: unknown[]) {
   const line = '[' + new Date().toISOString() + '] [' + level + '] ' +
     args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ') + '\n';
-  process.stdout.write(line);
+  if (level !== 'INFO ' && level !== 'DEBUG') process.stdout.write(line);
   stream?.write(line);
 }
 

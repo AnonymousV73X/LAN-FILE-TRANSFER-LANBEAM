@@ -13,7 +13,7 @@
  *   5. Open the main window; register IPC handlers.
  *   6. If --benchmark flag: run benchmark and exit.
  */
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, powerSaveBlocker } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, powerSaveBlocker, powerMonitor } from 'electron';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import QRCode from 'qrcode';
@@ -28,8 +28,18 @@ import { runBenchmark } from './benchmark';
 import { isNativeCoreAvailable } from './core-loader';
 import { initLogger, log } from './logger';
 
+// LANBeam never needs the internet. Skip proxy auto-detect (WPAD/PAC lookups
+// hang on LANs without internet) and Chromium's background network chatter.
+app.commandLine.appendSwitch('no-proxy-server');
+app.commandLine.appendSwitch('disable-background-networking');
+
 const APP_VERSION = '1.0.0';
 const DOWNLOAD_DIR = path.join(app.getPath('downloads'), 'LANBeam');
+
+function currentDownloadDir(): string {
+  const d = store?.settings?.downloadDir;
+  return d && path.isAbsolute(d) ? d : DOWNLOAD_DIR;
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -225,6 +235,8 @@ function registerIpc() {
     return orchestrator!.respondAcceptance(requestId, accepted);
   });
 
+  ipcMain.handle('transfer:cancel', (_e, transferId: string) => orchestrator!.cancelTransfer(transferId));
+
   ipcMain.handle('transfer:pick-files', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       properties: ['openFile', 'openDirectory', 'multiSelections'],
@@ -233,12 +245,27 @@ function registerIpc() {
   });
 
   ipcMain.handle('transfer:pick-download-dir', async () => {
-    const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory'] });
-    if (!result.canceled && result.filePaths[0]) {
-      // persist as user-chosen download dir (future enhancement)
-    }
-    return result.filePaths[0] ?? DOWNLOAD_DIR;
+    // Select an existing folder or create a new one (macOS: "New Folder" button).
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Choose or create a folder for incoming files',
+      defaultPath: currentDownloadDir(),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) return currentDownloadDir();
+    const dir = result.filePaths[0];
+    try { await fs.mkdir(dir, { recursive: true }); } catch (err) { log.error('mkdir download dir failed:', err); }
+    const next = store!.updateSettings({ downloadDir: dir });
+    mainWindow?.webContents.send('settings:updated', next);
+    return dir;
   });
+
+  ipcMain.handle('transfer:reset-download-dir', () => {
+    const next = store!.updateSettings({ downloadDir: '' });
+    mainWindow?.webContents.send('settings:updated', next);
+    return DOWNLOAD_DIR;
+  });
+
+  ipcMain.handle('transfer:default-download-dir', () => DOWNLOAD_DIR);
 
   ipcMain.handle('wifi:query', async () => queryWifiInfo());
 
@@ -282,7 +309,7 @@ function registerIpc() {
       if (!targetPath) return false;
       // If it's not absolute, resolve inside DOWNLOAD_DIR
       if (!path.isAbsolute(targetPath)) {
-        targetPath = path.join(DOWNLOAD_DIR, targetPath);
+        targetPath = path.join(currentDownloadDir(), targetPath);
       }
       try {
         await fs.access(targetPath);
@@ -290,7 +317,7 @@ function registerIpc() {
         return true;
       } catch {
         // Fallback: check DOWNLOAD_DIR directly with base filename
-        const baseTarget = path.join(DOWNLOAD_DIR, path.basename(filePathOrName));
+        const baseTarget = path.join(currentDownloadDir(), path.basename(filePathOrName));
         try {
           await fs.access(baseTarget);
           shell.showItemInFolder(baseTarget);
@@ -314,14 +341,14 @@ function registerIpc() {
       let targetPath = filePathOrName;
       if (!targetPath) return false;
       if (!path.isAbsolute(targetPath)) {
-        targetPath = path.join(DOWNLOAD_DIR, targetPath);
+        targetPath = path.join(currentDownloadDir(), targetPath);
       }
       try {
         await fs.access(targetPath);
         await shell.openPath(targetPath);
         return true;
       } catch {
-        const baseTarget = path.join(DOWNLOAD_DIR, path.basename(filePathOrName));
+        const baseTarget = path.join(currentDownloadDir(), path.basename(filePathOrName));
         try {
           await fs.access(baseTarget);
           await shell.openPath(baseTarget);
@@ -380,6 +407,64 @@ function pickBestLanIp(): string {
   return candidates[0].address;
 }
 
+// ---------------------------------------------------------------------------
+// Network change watcher — Wi-Fi switched / DHCP renewed / cable plugged:
+// re-derive the LAN URL, re-announce over mDNS and issue a fresh QR with no
+// restart. (The HTTP server listens on all interfaces, so it needs no rebind.)
+// ---------------------------------------------------------------------------
+function netSignature(): string {
+  const out: string[] = [];
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const n of ifaces[name] ?? []) {
+      if (n.family === 'IPv4' && !n.internal) out.push(`${name}:${n.address}`);
+    }
+  }
+  return out.sort().join('|');
+}
+
+function restartMdns() {
+  try { mdns?.destroy(); } catch {}
+  if (!store) return;
+  mdns = new MdnsService();
+  mdns.advertise(httpPort, store.localDeviceId, APP_VERSION, PERMANENT_HOST);
+  mdns.browse();
+  mdns.onPeersChanged((peers) => { mainWindow?.webContents.send('peers:updated', peers); });
+}
+
+function startNetworkWatcher() {
+  let sig = netSignature();
+  let settling: NodeJS.Timeout | null = null;
+  const apply = async () => {
+    settling = null;
+    sig = netSignature();
+    const ip = pickBestLanIp();
+    if (ip === '127.0.0.1') {
+      // No usable LAN yet (mid-switch). Don't mint a useless loopback QR —
+      // the next signature change (when DHCP finishes) re-runs this.
+      log.info('[net] no LAN address yet, waiting…');
+      mainWindow?.webContents.send('network:changed', { ipUrl: '', httpUrl: '', noNetwork: true });
+      return;
+    }
+    const url = `http://${ip}:${httpPort}`;
+    log.info(`[net] network changed → ${url}`);
+    baseUrl = url;
+    lanBeamIpUrl = url;
+    restartMdns();
+    // Order matters: URLs first, then the fresh QR (the renderer repaints on 'pairing:qr').
+    mainWindow?.webContents.send('network:changed', { ipUrl: url, httpUrl: url });
+    await refreshQr();
+  };
+  const check = () => {
+    if (netSignature() === sig || settling) return;
+    // Let DHCP / adapter bring-up settle before re-deriving the address.
+    settling = setTimeout(apply, 800);
+  };
+  setInterval(check, 1000);
+  powerMonitor.on('resume', () => setTimeout(check, 1500));
+  powerMonitor.on('unlock-screen', () => setTimeout(check, 500));
+}
+
 /**
  * PERMANENT connect URL.
  *
@@ -411,7 +496,7 @@ function permanentUrlReady(mdns: MdnsService, timeoutMs = 2000): Promise<boolean
 async function boot() {
   await initLogger();
   log.info('LANBeam starting up, version:', APP_VERSION);
-  await fs.mkdir(DOWNLOAD_DIR, { recursive: true });
+  await fs.mkdir(currentDownloadDir(), { recursive: true }).catch(() => fs.mkdir(DOWNLOAD_DIR, { recursive: true }));
   store = new StateStore();
   // Dedup persisted paired devices — keeps newest lastSeen per deviceId
   store.deduplicatePairedDevices();
@@ -461,6 +546,8 @@ async function boot() {
   await createWindow();
   await buildTray();
 
+  startNetworkWatcher();
+
   // Periodically refresh QR (one-time-use tokens) and update tray.
   setInterval(() => refreshQr(), 15 * 60 * 1000);
 
@@ -502,5 +589,5 @@ if (process.argv.includes('--benchmark')) {
     // On Windows/Linux, hide to tray — explicit quit from tray menu.
   });
   app.on('activate', () => { if (mainWindow === null) createWindow(); });
-  app.on('before-quit', () => { mdns?.stop(); tray?.destroy(); });
+  app.on('before-quit', () => { store?.flush(); mdns?.stop(); tray?.destroy(); });
 }

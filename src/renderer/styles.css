@@ -665,6 +665,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 
 /* ===== History list ===== */
 .history-list { display: flex; flex-direction: column; gap: 8px; }
+.history-row { content-visibility: auto; contain-intrinsic-size: auto 48px; }
 .history-row {
   display: grid;
   grid-template-columns: 1fr auto auto auto auto;

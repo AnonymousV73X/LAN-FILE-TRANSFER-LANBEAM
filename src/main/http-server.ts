@@ -125,7 +125,7 @@ function contentDisposition(fileName: string): string {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
-async function readBody(req: http.IncomingMessage, limitBytes = 64 * 1024 * 1024): Promise<Buffer> {
+async function readBody(req: http.IncomingMessage, limitBytes = 64 * 1024 * 1024, onData?: (total: number) => void): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -137,9 +137,12 @@ async function readBody(req: http.IncomingMessage, limitBytes = 64 * 1024 * 1024
         return;
       }
       chunks.push(chunk);
+      if (onData) onData(size);
     });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
+    req.on('aborted', () => reject(new Error('client aborted')));
+    req.on('close', () => { if (!req.complete) reject(new Error('client closed')); });
   });
 }
 
@@ -526,7 +529,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
           : undefined;
         if (target) {
           const keepCopy = manifest.keepCopy !== false; // default: keep
-          await opts.orchestrator.startInbound(manifest, opts.downloadDir, peerName);
+          await opts.orchestrator.startInbound(manifest, opts.store.settings.downloadDir || opts.downloadDir, peerName);
           pendingRelays.set(manifest.fileId, {
             targetDeviceId: target.deviceId,
             targetName: target.name,
@@ -541,6 +544,10 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         // Normal phone → desktop transfer. Auto mode lands immediately;
         // ask mode holds this request open until the desktop user answers
         // the Accept / Decline card (or the approval times out).
+        if (opts.orchestrator.getInbound(manifest.fileId)) {
+          sendJson(res, 200, { transferId: manifest.fileId, resumed: true });
+          return;
+        }
         const requestId = opts.orchestrator.requestAcceptance(manifest.fileName, manifest.fileSize, peerName);
         let decision: 'accepted' | 'declined' | 'timeout' = 'accepted';
         if ((opts.store.settings.receiveMode ?? 'auto') === 'ask') {
@@ -554,8 +561,24 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
             return;
           }
         }
-        const transferId = await opts.orchestrator.startInbound(manifest, opts.downloadDir, peerName);
+        const transferId = await opts.orchestrator.startInbound(manifest, opts.store.settings.downloadDir || opts.downloadDir, peerName);
         sendJson(res, 200, { transferId, requestId });
+        return;
+      }
+      if (pathname === '/api/transfer/status' && req.method === 'GET') {
+        const ids = (new URL(req.url || '', 'http://x').searchParams.get('ids') || '').split(',').filter(Boolean).slice(0, 50);
+        const transfers: Record<string, unknown> = {};
+        for (const id of ids) {
+          const { received, ...st } = opts.orchestrator.getInboundStatus(id);
+          transfers[id] = st;
+        }
+        sendJson(res, 200, { transfers });
+        return;
+      }
+      const statusMatch = pathname.match(/^\/api\/transfer\/([^/]+)\/status$/);
+      if (statusMatch && req.method === 'GET') {
+        const st = opts.orchestrator.getInboundStatus(statusMatch[1]);
+        sendJson(res, 200, { exists: st.state === 'receiving', cancelled: st.state === 'cancelled', received: st.received });
         return;
       }
       const chunkMatch = pathname.match(/^\/api\/transfer\/([^/]+)\/chunk$/);
@@ -563,9 +586,21 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         const transferId = chunkMatch[1];
         const chunkIndex = parseInt(req.headers['x-chunk-index'] as string, 10);
         const compressed = req.headers['x-compressed'] === '1';
-        const data = await readBody(req, 32 * 1024 * 1024); // chunk up to 32MB
-        log.info(`[http] Received chunk upload: transfer=${transferId}, chunkIndex=${chunkIndex}, size=${data.length}, compressed=${compressed}`);
+        if (opts.orchestrator.isCancelled(transferId)) {
+          req.resume();
+          sendJson(res, 410, { ok: false, cancelled: true });
+          return;
+        }
+        let data: Buffer;
+        try {
+          data = await readBody(req, 32 * 1024 * 1024, (n) => opts.orchestrator.setInflight(transferId, chunkIndex, n)); // chunk up to 32MB
+        } catch (err) {
+          opts.orchestrator.clearInflight(transferId, chunkIndex);
+          throw err;
+        }
+        log.debug(`[http] Received chunk upload: transfer=${transferId}, chunkIndex=${chunkIndex}, size=${data.length}, compressed=${compressed}`);
         const ok = await opts.orchestrator.receiveChunk(transferId, chunkIndex, data, compressed);
+        opts.orchestrator.clearInflight(transferId, chunkIndex);
         if (!ok) {
           log.warn(`[http] Chunk verification failed for transfer=${transferId}, chunkIndex=${chunkIndex}`);
         }
@@ -638,12 +673,19 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         };
         const wireProgress = (stream: import('stream').Readable, resp: http.ServerResponse) => {
           stream.on('data', (c: Buffer) => markServed(c.length));
+          opts.orchestrator.registerOutboundAbort(transferId, () => { stream.destroy(); resp.destroy(); });
           // 'finish' = response fully flushed. For a non-range request that is
           // always the whole file, so completion is certain even if a previous
           // partial range never reached the full size.
           resp.on('finish', () => {
             if (!isRangeReq) {
-              opts.orchestrator.completeOutboundHttp(transferId).catch(() => {});
+              const entry = opts.orchestrator.getOutbound(transferId);
+              opts.orchestrator.completeOutboundHttp(transferId).then(() => {
+                // Download finished server-side: drop the entry even if the phone
+                // browser was closed and can never send the ack.
+                opts.orchestrator.removeOutbound(transferId);
+                if (entry?.stagedBy === 'relay' && entry.keepCopy === false) fs.unlink(entry.filePath).catch(() => {});
+              }).catch(() => {});
             }
           });
         };
@@ -753,7 +795,12 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
 
       res.writeHead(404); res.end('Not found');
     } catch (err) {
-      console.error('[http-server] error:', err);
+      const code = (err as any)?.code;
+      if (code === 'ECONNRESET' || (err as any)?.message === 'aborted') {
+        log.debug('[http-server] client dropped mid-request (flaky link)');
+      } else {
+        console.error('[http-server] error:', err);
+      }
       res.writeHead(500); res.end('Internal error');
     }
   });
@@ -791,6 +838,19 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       pendingRelays.delete(ev.transferId);
     }
   });
+
+  // Slow / lossy LAN hardening: never time out a long chunk upload or file
+  // stream, keep connections alive between chunks, disable Nagle.
+  server.requestTimeout = 0;
+  server.headersTimeout = 60_000;
+  server.keepAliveTimeout = 65_000;
+  server.setTimeout(0);
+  server.on('connection', (sock) => {
+    sock.setNoDelay(true);
+    sock.setKeepAlive(true, 15_000);
+    sock.on('error', () => {}); // a phone vanishing off Wi-Fi must never crash/log-spam the server
+  });
+  server.on('clientError', (_err, sock) => { try { sock.destroy(); } catch {} });
 
   return new Promise((resolve) => {
     server.listen(opts.port, () => {

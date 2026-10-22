@@ -108,6 +108,42 @@ export type OrchestratorEvent =
 export class TransferOrchestrator extends EventEmitter {
   private inbound = new Map<string, InboundTransfer>();
   private outbound = new Map<string, OutboundTransfer>();
+  private inflight = new Map<string, Map<number, number>>();
+  private inflightEmitAt = new Map<string, number>();
+  private lastActivity = new Map<string, number>();
+  private finished = new Map<string, { state: 'complete' | 'failed'; at: number }>();
+  private stallTimer: NodeJS.Timeout | null = null;
+  private touch(transferId: string) { this.lastActivity.set(transferId, Date.now()); }
+
+  /** Ground truth for a phone->PC upload — the phone renders its cards from this, never from guesses. */
+  getInboundStatus(transferId: string): { state: 'receiving' | 'complete' | 'failed' | 'cancelled' | 'unknown'; bytes: number; total: number; idleMs: number; received: number[] } {
+    const base = { bytes: 0, total: 0, idleMs: 0, received: [] as number[] };
+    if (this.cancelled.has(transferId)) return { ...base, state: 'cancelled' };
+    const inb = this.inbound.get(transferId);
+    if (inb) {
+      const bytes = Math.min(inb.manifest.fileSize, inb.bytesTransferred + this.inflightSum(transferId));
+      return { state: 'receiving', bytes, total: inb.manifest.fileSize, idleMs: Date.now() - (this.lastActivity.get(transferId) ?? inb.startedAt), received: Array.from(inb.receivedChunks) };
+    }
+    const f = this.finished.get(transferId);
+    if (f) return { ...base, state: f.state };
+    return { ...base, state: 'unknown' };
+  }
+
+  /** Flag silent transfers (phone left / browser closed) so the PC card never looks alive when it is not. */
+  private startStallWatch() {
+    if (this.stallTimer) return;
+    this.stallTimer = setInterval(() => {
+      const now = Date.now();
+      for (const id of this.inbound.keys()) {
+        if (now - (this.lastActivity.get(id) ?? 0) > 8000) this.emitProgress(id, true);
+      }
+      for (const [id, f] of this.finished) if (now - f.at > 3600_000) this.finished.delete(id);
+    }, 3000);
+    this.stallTimer.unref?.();
+  }
+  private cancelled = new Set<string>();
+  private outAborts = new Map<string, AbortController>();
+  private outStreams = new Map<string, Set<() => void>>();
   private resumeState = new Map<string, Set<number>>(); // manifest.root -> received chunk indices (for resume)
 
   constructor(private store: StateStore) {
@@ -172,11 +208,11 @@ export class TransferOrchestrator extends EventEmitter {
       // Only pre-allocate if file doesn't already exist (resume case).
       const existing = await fs.stat(outPath).catch(() => null);
       if (!existing) {
+        // Create an empty file only. Pre-sizing with a write at EOF forces
+        // NTFS to zero-fill the whole file up front — a multi-second stall
+        // on big files before the first byte moves. Chunk writes at their
+        // offsets extend the file as they land.
         const h = await fs.open(outPath, 'w');
-        // Pre-size the file to avoid race between parallel chunk writers.
-        if (manifest.fileSize > 0) {
-          await h.write(Buffer.alloc(1), 0, 1, manifest.fileSize - 1);
-        }
         await h.close();
       }
     } catch (err) {
@@ -202,6 +238,11 @@ export class TransferOrchestrator extends EventEmitter {
       paused: false,
     };
     this.inbound.set(transferId, transfer);
+    this.cancelled.delete(transferId);
+    this.touch(transferId);
+    this.startStallWatch();
+    // Optimistic: the receiving card appears the instant the transfer is accepted.
+    this.emitProgress(transferId, true);
 
     return transferId;
   }
@@ -213,6 +254,7 @@ export class TransferOrchestrator extends EventEmitter {
    * retransmit only that chunk — never the whole file.
    */
   async receiveChunk(transferId: string, chunkIndex: number, data: Buffer, compressed: boolean): Promise<boolean> {
+    if (this.cancelled.has(transferId)) return false;
     const transfer = this.inbound.get(transferId);
     if (!transfer) return false;
     if (transfer.receivedChunks.has(chunkIndex)) {
@@ -244,7 +286,7 @@ export class TransferOrchestrator extends EventEmitter {
       return false;
     }
 
-    log.info(`[orchestrator] Chunk ${chunkIndex} verified successfully (len=${buf.length}, hash=${expected.hash.slice(0, 12)}...)`);
+    log.debug(`[orchestrator] Chunk ${chunkIndex} verified successfully (len=${buf.length}, hash=${expected.hash.slice(0, 12)}...)`);
 
     // Write the verified chunk to disk at its correct offset.
     // File is pre-allocated in startInbound so 'r+' always works.
@@ -260,6 +302,8 @@ export class TransferOrchestrator extends EventEmitter {
       log.error(`[orchestrator] Failed to write chunk ${chunkIndex} to ${outPath}:`, err);
       return false;
     }
+    this.clearInflight(transferId, chunkIndex);
+    this.touch(transferId);
     transfer.receivedChunks.add(chunkIndex);
     transfer.bytesTransferred += buf.length;
     this.resumeState.set(transfer.manifest.merkleRoot, new Set(transfer.receivedChunks));
@@ -384,10 +428,11 @@ export class TransferOrchestrator extends EventEmitter {
     const transfer = inbound ? this.inbound.get(transferId) : this.outbound.get(transferId);
     if (!transfer) return;
     const now = Date.now();
+    const shown = Math.min(transfer.manifest.fileSize, transfer.bytesTransferred + (inbound ? this.inflightSum(transferId) : 0));
 
     // Record this checkpoint (now, current bytes)
     if (!transfer.samples) transfer.samples = [{ time: transfer.startedAt, bytes: 0 }];
-    transfer.samples.push({ time: now, bytes: transfer.bytesTransferred });
+    transfer.samples.push({ time: now, bytes: shown });
 
     // Prune samples older than 3.5 seconds
     const WINDOW_MS = 3000; // 3-second sliding window
@@ -398,12 +443,12 @@ export class TransferOrchestrator extends EventEmitter {
     // Calculate throughput across the sliding window
     const oldest = transfer.samples[0];
     const windowElapsedSec = Math.max(0.1, (now - oldest.time) / 1000);
-    const windowBytes = Math.max(0, transfer.bytesTransferred - oldest.bytes);
+    const windowBytes = Math.max(0, shown - oldest.bytes);
     const windowThroughputMbps = (windowBytes * 8) / 1_000_000 / windowElapsedSec;
 
     // Total elapsed fallback for early transfer phase (< 1s)
     const totalElapsedSec = Math.max(0.1, (now - transfer.startedAt) / 1000);
-    const overallAvgMbps = (transfer.bytesTransferred * 8) / 1_000_000 / totalElapsedSec;
+    const overallAvgMbps = (shown * 8) / 1_000_000 / totalElapsedSec;
 
     // Use window speed if window is at least 1s wide, otherwise use overall speed
     const currentSpeedMbps = (now - oldest.time >= 1000) ? windowThroughputMbps : overallAvgMbps;
@@ -413,21 +458,23 @@ export class TransferOrchestrator extends EventEmitter {
       transfer.lastThroughputSamples.push(Math.round(currentSpeedMbps * 10) / 10);
       if (transfer.lastThroughputSamples.length > 30) transfer.lastThroughputSamples.shift();
       transfer.lastSampleAt = now;
-      transfer.lastSampleBytes = transfer.bytesTransferred;
+      transfer.lastSampleBytes = shown;
     }
 
     const totalBytes = transfer.manifest.fileSize;
-    const bytesTransferred = transfer.bytesTransferred;
+    const bytesTransferred = shown;
     const remainingBytes = Math.max(0, totalBytes - bytesTransferred);
     const etaMs = currentSpeedMbps > 0 ? (remainingBytes * 8) / 1_000_000 / currentSpeedMbps * 1000 : 0;
 
-    const progress: TransferProgress = {
+    const stalled = inbound && now - (this.lastActivity.get(transferId) ?? now) > 8000;
+    const progress: TransferProgress & { stalled?: boolean } = {
+      stalled,
       fileId: transferId,
       fileName: transfer.manifest.fileName,
       peerName: transfer.peerName || this.peerNameForInbound,
       bytesTransferred,
       totalBytes,
-      throughputMbps: Math.round(currentSpeedMbps * 10) / 10,
+      throughputMbps: stalled ? 0 : Math.round(currentSpeedMbps * 10) / 10,
       chunkRetries: 'failedChunks' in transfer ? transfer.failedChunks.length : 0,
       etaMs,
       sparkline: transfer.lastThroughputSamples.slice(),
@@ -498,6 +545,8 @@ export class TransferOrchestrator extends EventEmitter {
     });
     this.resumeState.delete(transfer.manifest.merkleRoot);
     this.inbound.delete(transferId);
+    this.lastActivity.delete(transferId);
+    this.finished.set(transferId, { state: integrityOk ? 'complete' : 'failed', at: Date.now() });
     this.emit('event', { type: 'inbound:complete', transferId, result, outputPath } satisfies OrchestratorEvent);
   }
 
@@ -535,6 +584,7 @@ export class TransferOrchestrator extends EventEmitter {
     try {
       if (peer.transport === 'quic') {
         const controller = new AbortController();
+        this.outAborts.set(transferId, controller);
         const result = await core.sendFileQuic({
           host: peer.host,
           port: peer.port,
@@ -559,6 +609,67 @@ export class TransferOrchestrator extends EventEmitter {
       this.emit('event', { type: 'outbound:failed', transferId, error: (err as Error).message } satisfies OrchestratorEvent);
     }
     return transferId;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cancel / kill a running transfer (PC-side)
+  // ---------------------------------------------------------------------------
+  /** Live bytes of a chunk still arriving — makes progress move per packet, not per 4MB chunk. */
+  setInflight(transferId: string, chunkIndex: number, bytes: number): void {
+    let m = this.inflight.get(transferId);
+    if (!m) { m = new Map(); this.inflight.set(transferId, m); }
+    m.set(chunkIndex, bytes);
+    this.touch(transferId);
+    const now = Date.now();
+    if (now - (this.inflightEmitAt.get(transferId) ?? 0) >= 120) {
+      this.inflightEmitAt.set(transferId, now);
+      this.emitProgress(transferId, true);
+    }
+  }
+
+  clearInflight(transferId: string, chunkIndex: number): void {
+    this.inflight.get(transferId)?.delete(chunkIndex);
+  }
+
+  private inflightSum(transferId: string): number {
+    let n = 0;
+    for (const v of this.inflight.get(transferId)?.values() ?? []) n += v;
+    return n;
+  }
+
+  isCancelled(transferId: string): boolean {
+    return this.cancelled.has(transferId);
+  }
+
+  /** http-server registers a teardown for every live response stream. */
+  registerOutboundAbort(transferId: string, fn: () => void): void {
+    let set = this.outStreams.get(transferId);
+    if (!set) { set = new Set(); this.outStreams.set(transferId, set); }
+    set.add(fn);
+  }
+
+  async cancelTransfer(transferId: string): Promise<boolean> {
+    const inb = this.inbound.get(transferId);
+    const out = this.outbound.get(transferId);
+    if (!inb && !out) return false;
+    this.cancelled.add(transferId);
+    if (inb) {
+      this.inbound.delete(transferId);
+      this.resumeState.delete(inb.manifest.merkleRoot);
+      // Tell the UI first (instant), then remove the partial file in the background.
+      this.emit('event', { type: 'inbound:failed', transferId, error: 'Cancelled' } satisfies OrchestratorEvent);
+      this.inflight.delete(transferId);
+      fs.unlink(path.join(inb.outputDir, inb.manifest.fileName)).catch(() => {});
+    }
+    if (out) {
+      this.outbound.delete(transferId);
+      try { this.outAborts.get(transferId)?.abort(); } catch {}
+      for (const fn of this.outStreams.get(transferId) ?? []) { try { fn(); } catch {} }
+      this.outStreams.delete(transferId);
+      this.outAborts.delete(transferId);
+      this.emit('event', { type: 'outbound:failed', transferId, error: 'Cancelled' } satisfies OrchestratorEvent);
+    }
+    return true;
   }
 
   private async completeOutbound(transferId: string, result: TransferComplete, peerName: string) {

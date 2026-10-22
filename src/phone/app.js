@@ -255,7 +255,7 @@ const ICONS = {
 
 function iconForStatus(status) {
   if (status === 'done') return ICONS.check;
-  if (status === 'error') return ICONS.error;
+  if (status === 'error' || status === 'cancelled' || status === 'declined') return ICONS.error;
   return ICONS.file;
 }
 
@@ -465,17 +465,43 @@ async function tryPair() {
 // ---------------------------------------------------------------------------
 // Heartbeat — keeps lastSeen fresh on the desktop so it shows us as online.
 // ---------------------------------------------------------------------------
+function showLinkBanner(show) {
+  let b = document.getElementById('link-banner');
+  if (!show) { if (b) b.remove(); return; }
+  if (b) return;
+  b = document.createElement('div');
+  b.id = 'link-banner';
+  b.style.cssText = 'position:fixed;left:12px;right:12px;top:12px;z-index:9999;padding:10px 14px;border-radius:12px;background:#2a1a1f;color:#fff;font-size:13px;line-height:1.4;border:1px solid rgba(255,255,255,.18)';
+  b.textContent = "Can't reach the PC. Keep Wi-Fi connected even without internet (choose \u201cStay connected\u201d) and turn off mobile data if this keeps happening.";
+  document.body.appendChild(b);
+}
+
 function startHeartbeat() {
   if (state.heartbeatTimer) return; // already running
-  const beat = () => {
-    fetch('/api/heartbeat', {
-      method: 'POST',
-      headers: authHeaders(),
-      credentials: 'include',
-    }).catch(() => {}); // fire-and-forget; network hiccups are fine
+  let fails = 0;
+  let timer = null;
+  const beat = async () => {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 6000);
+    try {
+      const r = await fetch('/api/heartbeat', { method: 'POST', headers: authHeaders(), credentials: 'include', signal: ctl.signal });
+      if (!r.ok && r.status >= 500) throw new Error('bad status');
+      if (fails >= 2) showLinkBanner(false);
+      fails = 0;
+    } catch {
+      fails++;
+      if (fails >= 2) showLinkBanner(true);
+    } finally {
+      clearTimeout(t);
+      // Retry fast while the link is down, relax when healthy.
+      timer = setTimeout(beat, fails ? 3000 : 15000);
+      state.heartbeatTimer = timer;
+    }
   };
-  beat(); // immediate first beat
-  state.heartbeatTimer = setInterval(beat, 15000); // every 15s
+  state.heartbeatTimer = true;
+  beat();
+  window.addEventListener('online', () => { clearTimeout(timer); beat(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { clearTimeout(timer); beat(); } });
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +771,75 @@ function closeTargetSheet() {
   }, 240);
 }
 
+// ---------------------------------------------------------------------------
+// Background resilience: queued/in-flight uploads are persisted in IndexedDB
+// so closing or killing the browser never loses them — on next open they
+// resume from the chunks the PC already has. A Wake Lock keeps the screen/CPU
+// alive while sending so the OS does not suspend the page mid-transfer.
+// ---------------------------------------------------------------------------
+const PERSIST_MAX = 1024 * 1024 * 1024; // files above this are not duplicated into IndexedDB
+const _idb = (() => {
+  let p = null;
+  const open = () => p || (p = new Promise((res, rej) => {
+    try {
+      const r = indexedDB.open('lanbeam-uploads', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('q', { keyPath: 'id' });
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    } catch (e) { rej(e); }
+  }));
+  const tx = async (mode, fn) => {
+    try {
+      const db = await open();
+      return await new Promise((res, rej) => {
+        const t = db.transaction('q', mode);
+        const rq = fn(t.objectStore('q'));
+        t.oncomplete = () => res(rq && rq.result);
+        t.onerror = t.onabort = () => rej(t.error);
+      });
+    } catch { return null; }
+  };
+  return {
+    put: (v) => tx('readwrite', s => s.put(v)),
+    del: (id) => tx('readwrite', s => s.delete(id)),
+    all: () => tx('readonly', s => s.getAll()),
+  };
+})();
+
+function persistUpload(q) {
+  if (!q.file || q.size > PERSIST_MAX) return;
+  _idb.put({ id: q.id, name: q.name, size: q.size, file: q.file, targetId: q.targetId,
+    targetName: q.targetName, targetSelf: q.targetSelf, keepCopy: q.keepCopy });
+}
+
+let _wakeLock = null;
+async function holdWakeLock() {
+  try {
+    if (!_wakeLock && navigator.wakeLock) {
+      _wakeLock = await navigator.wakeLock.request('screen');
+      _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+    }
+  } catch {}
+}
+function releaseWakeLock() {
+  try { if (_wakeLock) _wakeLock.release(); } catch {}
+  _wakeLock = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.queue.some(q => q.status === 'sending')) holdWakeLock();
+});
+
+async function restoreUploads() {
+  const rows = await _idb.all();
+  if (!rows || !rows.length) return;
+  for (const r of rows) {
+    if (state.queue.some(q => q.id === r.id)) continue;
+    state.queue.push({ ...r, sent: 0, status: 'queued', chunks: [] });
+  }
+  renderQueue();
+  pump();
+}
+
 function commitFiles(files, target, keepCopy) {
   if (!target) return;
   try { localStorage.setItem('lanbeam:lastTarget', target.id || '__self__'); } catch {}
@@ -763,6 +858,7 @@ function commitFiles(files, target, keepCopy) {
       targetSelf: isSelf,
       keepCopy: keepCopy !== false,
     });
+    persistUpload(state.queue[state.queue.length - 1]);
   }
   renderQueue();
   pump();
@@ -813,20 +909,27 @@ function renderQueue() {
   // how much history piles up, the active file is always the first row —
   // never buried below old completed items.
   const ordered = [
-    ...state.queue.filter(q => q.status === 'sending'),
-    ...state.queue.filter(q => q.status !== 'sending').reverse(),
+    ...state.queue.filter(q => q.status === 'sending' || q.status === 'retrying'),
+    ...state.queue.filter(q => q.status !== 'sending' && q.status !== 'retrying').reverse(),
   ];
   list.innerHTML = ordered.map(item => {
     const pct = item.size > 0 ? (item.sent / item.size * 100) : 0;
-    const iconClass = item.status === 'done' ? 'done' : item.status === 'error' ? 'error' : item.status === 'sending' ? 'active' : '';
-    const fillClass = item.status === 'error' ? 'error' : item.status === 'done' ? 'done' : '';
+    const bad = item.status === 'error' || item.status === 'cancelled' || item.status === 'declined';
+    const iconClass = item.status === 'done' ? 'done' : bad ? 'error' : (item.status === 'sending' || item.status === 'retrying') ? 'active' : '';
+    const fillClass = bad ? 'error' : item.status === 'done' ? 'done' : '';
+    const LABEL = { queued: 'waiting', sending: 'sending', retrying: 'reconnecting', done: 'sent', error: 'failed', cancelled: 'cancelled', declined: 'declined' };
+    const badgeCls = item.status === 'retrying' ? 'sending' : (item.status === 'cancelled' || item.status === 'declined') ? 'error' : item.status;
+    const actions = item.status === 'error' && item.file
+      ? `<button class="resave-link" data-retry="${item.id}">Retry</button> <button class="resave-link" data-dismiss="${item.id}">Remove</button>`
+      : (item.status === 'error' || item.status === 'cancelled' || item.status === 'declined')
+        ? `<button class="resave-link" data-dismiss="${item.id}">Remove</button>` : '';
     // Mesh pill — a quiet arrow naming the destination (only when it's not
     // the PC, so the everyday single-device look stays untouched).
     const targetPill = (!item.targetSelf && item.targetName)
       ? `<span class="pill-target">\u2192 ${escapeHtml(item.targetName)}</span>`
       : '';
     return `
-      <div class="file-row ${item.status === 'sending' ? 'live' : ''}" data-id="${item.id}">
+      <div class="file-row ${item.status === 'sending' || item.status === 'retrying' ? 'live' : ''}" data-id="${item.id}">
         <div class="file-row-row">
           <div class="file-icon ${iconClass}">${iconForStatus(item.status)}</div>
           <div class="text">
@@ -834,12 +937,14 @@ function renderQueue() {
             <div class="meta">
               <span>${formatBytes(item.sent)} / ${formatBytes(item.size)}</span>
               ${targetPill}
+              ${item.phase ? `<span>${escapeHtml(item.phase)}</span>` : ''}
               <span class="meta-pct">${pct.toFixed(0)}%</span>
             </div>
           </div>
-          <span class="badge ${item.status}">${item.status}</span>
+          <span class="badge ${badgeCls}">${LABEL[item.status] || item.status}</span>
         </div>
         <div class="bar"><div class="fill ${fillClass}" style="width:${pct.toFixed(1)}%"></div></div>
+        ${actions ? `<div class="recv-status">${actions}</div>` : ''}
       </div>
     `;
   }).join('');
@@ -848,11 +953,33 @@ function renderQueue() {
 // ---------------------------------------------------------------------------
 // Sender: build manifest locally, then push chunks in parallel.
 // ---------------------------------------------------------------------------
+function xhrUpload(url, headers, body, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', url);
+    x.withCredentials = true;
+    for (const k in headers) x.setRequestHeader(k, headers[k]);
+    // Stall watchdog: a jammed Wi-Fi link can hang a socket forever. If no
+    // bytes move for 25s, abort so the caller's retry opens a fresh connection.
+    let wd = setTimeout(() => x.abort(), 25000);
+    const kick = () => { clearTimeout(wd); wd = setTimeout(() => x.abort(), 25000); };
+    x.upload.onprogress = (e) => { kick(); if (e.lengthComputable) onProgress(e.loaded); };
+    x.onabort = () => { clearTimeout(wd); reject(new Error('stalled')); };
+    x.onload = () => { clearTimeout(wd); resolve(x.status); };
+    x.onerror = () => { clearTimeout(wd); reject(new Error('network error')); };
+    x.ontimeout = () => reject(new Error('timeout'));
+    x.send(body);
+  });
+}
+
 async function pump() {
   const next = state.queue.find(q => q.status === 'queued');
-  if (!next) return;
+  if (!next) { releaseWakeLock(); return; }
   next.status = 'sending';
+  next.running = true;
+  next.phase = '';
   renderQueue();
+  holdWakeLock();
 
   try {
     // Build a manifest (chunk size, count, per-chunk SHA-like fingerprint using
@@ -890,6 +1017,9 @@ async function pump() {
     next.status = 'sending';
     renderQueue();
     // POST manifest to start the transfer (receiver allocates a transfer slot)
+    next.phase = 'Connecting to PC…';
+    renderQueue();
+    const _waitT = setTimeout(() => { if (next.phase) { next.phase = 'Waiting for PC to accept…'; renderQueue(); } }, 1200);
     const startResp = await fetch('/api/transfer/start', {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -897,41 +1027,69 @@ async function pump() {
       body: JSON.stringify(manifest),
     });
     if (!startResp.ok) {
+      clearTimeout(_waitT);
       // Structured failures from the desktop's ask-mode gate / revoked sessions.
       let reason = 'start failed (' + startResp.status + ')';
+      let fatal = null;
       try {
         const j = await startResp.json();
-        if (startResp.status === 403) reason = 'Declined on the desktop';
-        else if (startResp.status === 408) reason = 'Approval timed out on the desktop';
-        else if (startResp.status === 401) { reason = 'Not paired — scan the QR again'; clearPairSecret(); }
+        if (startResp.status === 403) { reason = 'Declined on the desktop'; fatal = 'declined'; }
+        else if (startResp.status === 408) { reason = 'Approval timed out on the desktop'; fatal = 'declined'; }
+        else if (startResp.status === 401) { reason = 'Not paired — scan the QR again'; fatal = 'error'; clearPairSecret(); }
         else if (j?.error) reason = String(j.error);
       } catch {}
-      throw new Error(reason);
+      const fe = new Error(reason); fe.fatal = fatal; throw fe;
     }
+    clearTimeout(_waitT);
+    next.phase = '';
     const { transferId } = await startResp.json();
+    // Resume: ask the PC which chunks it already holds and skip them.
+    const have = new Set();
+    try {
+      const sr = await fetch(`/api/transfer/${transferId}/status`, { headers: authHeaders(), credentials: 'include' });
+      if (sr.ok) { const sj = await sr.json(); for (const i of (sj.received || [])) have.add(i); }
+    } catch {}
 
     // Pump chunks in parallel — up to maxParallelStreams concurrent fetches.
     let nextIdx = 0;
+    next.doneBytes = 0;
+    for (const i of have) if (chunks[i]) next.doneBytes += chunks[i].length;
+    const inflight = {};
+    let _lastR = 0;
+    const paint = () => {
+      let live = 0; for (const k in inflight) live += inflight[k];
+      next.sent = Math.min(next.size, next.doneBytes + live);
+      const t = Date.now();
+      if (t - _lastR > 100) { _lastR = t; renderQueue(); }
+    };
     const workers = Array.from({ length: Math.min(state.maxParallelStreams, totalChunks) }, async () => {
       while (true) {
         const idx = nextIdx++;
         if (idx >= totalChunks) break;
+        if (have.has(idx)) continue;
         const chunk = chunks[idx];
         const blob = next.file.slice(chunk.offset, chunk.offset + chunk.length);
         const buf = await blob.arrayBuffer();
-        const r = await fetch(`/api/transfer/${transferId}/chunk`, {
-          method: 'POST',
-          headers: authHeaders({
-            'Content-Type': 'application/octet-stream',
-            'X-Chunk-Index': String(idx),
-            'X-Compressed': chunk.compressed ? '1' : '0',
-          }),
-          credentials: 'include',
-          body: buf,
-        });
-        if (!r.ok) throw new Error(`chunk ${idx} upload failed: ${r.status}`);
-        next.sent += chunk.length;
-        renderQueue();
+        let status = 0, tries = 0;
+        while (true) {
+          try {
+            status = await xhrUpload(`/api/transfer/${transferId}/chunk`, authHeaders({
+              'Content-Type': 'application/octet-stream',
+              'X-Chunk-Index': String(idx),
+              'X-Compressed': chunk.compressed ? '1' : '0',
+            }), buf, (loaded) => { inflight[idx] = loaded; paint(); });
+            break;
+          } catch (e) {
+            delete inflight[idx];
+            if (++tries >= 8) throw e;
+            await new Promise(r => setTimeout(r, Math.min(5000, 400 * tries * tries)));
+          }
+        }
+        delete inflight[idx];
+        if (status === 410) { const ce = new Error('Cancelled on the PC'); ce.fatal = 'cancelled'; throw ce; }
+        if (status < 200 || status >= 300) throw new Error(`chunk ${idx} upload failed: ${status}`);
+        next.doneBytes += chunk.length;
+        paint();
       }
     });
     await Promise.all(workers);
@@ -943,17 +1101,93 @@ async function pump() {
       credentials: 'include',
     });
     next.status = 'done';
+    next.attempts = 0;
+    next.phase = '';
+    _idb.del(next.id);
     renderQueue();
     toast(next.targetSelf ? `${next.name} sent` : `${next.name} sent to ${next.targetName}`);
   } catch (err) {
     console.error('[lanbeam] send failed:', err);
-    next.status = 'error';
+    if (err && err.fatal) {
+      next.status = err.fatal;
+      next.phase = err.message;
+      _idb.del(next.id);
+    } else if (next.file && (next.attempts = (next.attempts || 0) + 1) <= 6) {
+      // Transient (network drop, PC busy, browser suspended): stay visibly
+      // "Reconnecting" and resume automatically — never a sticky red error.
+      const wait = Math.min(30000, 2000 * 2 ** (next.attempts - 1));
+      next.status = 'retrying';
+      next.phase = `Reconnecting\u2026 attempt ${next.attempts}/6`;
+      setTimeout(() => { if (next.status === 'retrying') { next.status = 'queued'; pump(); } }, wait);
+    } else {
+      next.status = 'error';
+      next.phase = (err && err.message) || 'Failed';
+    }
     renderQueue();
-    toast('Send failed: ' + err.message);
+    toast('Send issue: ' + ((err && err.message) || 'unknown'));
   } finally {
+    next.running = false;
     pump();  // start next queued file
   }
 }
+
+// ---------------------------------------------------------------------------
+// Stateless truth: the PC is the single source of truth for every upload.
+// Cards are derived from what the PC reports (bytes, liveness, completion) —
+// so a card can never claim "error" while bytes are flowing, nor "sending"
+// when nothing moves. Runs on a timer and on every return to the page.
+// ---------------------------------------------------------------------------
+const FINAL_STATES = new Set(['done', 'cancelled', 'declined']);
+function applyServerTruth(q, s) {
+  if (!s || s.state === 'unknown') return;
+  if (s.state === 'complete') { q.sent = q.size; q.status = 'done'; q.phase = ''; _idb.del(q.id); return; }
+  if (s.state === 'cancelled') { q.status = 'cancelled'; q.phase = 'Cancelled on the PC'; _idb.del(q.id); return; }
+  if (s.state === 'failed') { q.status = 'error'; q.phase = 'PC integrity check failed'; q.attempts = 99; return; }
+  // state === 'receiving'
+  if (!q.running) q.sent = Math.min(q.size, Math.max(0, s.bytes));
+  const live = s.idleMs < 8000;
+  if (live) {
+    if (q.status === 'error' || q.status === 'retrying' || (q.status === 'sending' && !q.running)) {
+      q.status = 'sending'; q.phase = q.running ? '' : 'Receiving on PC\u2026';
+    }
+  } else if (q.status === 'sending' && !q.running) {
+    // Nothing moving and nothing running here (page was frozen/restored): resume.
+    q.status = 'queued'; q.phase = 'Resuming\u2026'; q.resumeKick = true;
+  }
+}
+let _syncBusy = false;
+async function syncQueue() {
+  if (_syncBusy || !state.paired) return;
+  const items = state.queue.filter(q => !FINAL_STATES.has(q.status));
+  if (!items.length) return;
+  _syncBusy = true;
+  const ctl = new AbortController();
+  const tm = setTimeout(() => ctl.abort(), 4000);
+  try {
+    const r = await fetch('/api/transfer/status?ids=' + items.map(q => encodeURIComponent(q.id)).join(','), { headers: authHeaders(), credentials: 'include', signal: ctl.signal });
+    if (!r.ok) return;
+    const map = (await r.json()).transfers || {};
+    let kick = false;
+    for (const q of items) { applyServerTruth(q, map[q.id]); if (q.resumeKick) { q.resumeKick = false; kick = true; } }
+    renderQueue();
+    if (kick) pump();
+  } catch {} finally { clearTimeout(tm); _syncBusy = false; }
+}
+setInterval(syncQueue, 1200);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncQueue(); });
+window.addEventListener('pageshow', syncQueue);
+window.addEventListener('online', syncQueue);
+document.addEventListener('click', (e) => {
+  const rt = e.target.closest && e.target.closest('[data-retry]');
+  const dm = e.target.closest && e.target.closest('[data-dismiss]');
+  if (rt) {
+    const q = state.queue.find(x => x.id === rt.dataset.retry);
+    if (q && q.file) { q.attempts = 0; q.status = 'queued'; q.phase = ''; renderQueue(); pump(); }
+  } else if (dm) {
+    const i = state.queue.findIndex(x => x.id === dm.dataset.dismiss);
+    if (i >= 0) { _idb.del(state.queue[i].id); state.queue.splice(i, 1); renderQueue(); }
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Crypto helpers — SubtleCrypto SHA-256 (requires secure context / HTTPS).
@@ -1025,11 +1259,17 @@ function buildFooterText(w) {
   return parts.join(' · ');
 }
 
+let _footBusy = false;
 async function refreshFooter() {
+  if (_footBusy) return;
+  _footBusy = true;
+  const _fc = new AbortController();
+  const _ft = setTimeout(() => _fc.abort(), 5000);
   try {
     const r = await fetch('/api/state', {
       headers: authHeaders(),
       credentials: 'include',
+      signal: _fc.signal,
     });
     if (!r.ok) return; // not paired or server not reachable
     const j = await r.json();
@@ -1055,7 +1295,7 @@ async function refreshFooter() {
     }
     const el = document.getElementById('wifi-info');
     if (el) el.textContent = buildFooterText(j.wifi);
-  } catch {}
+  } catch {} finally { clearTimeout(_ft); _footBusy = false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,9 +1321,10 @@ function registerServiceWorker() {
   bindPicker();
   bindSheet();
   registerServiceWorker();
+  restoreUploads();
   refreshFooter();
   setInterval(refreshFooter, 10_000);
-  setInterval(checkIncomingTransfers, 3000);
+  setInterval(checkIncomingTransfers, 1500);
   checkIncomingTransfers();
   // Background tabs throttle timers to ~1/min — poll immediately whenever the
   // user returns to the tab so incoming files start receiving instantly.
@@ -1150,12 +1391,17 @@ function canStreamInPage() {
   }
 }
 
+let _pollBusy = false;
 async function checkIncomingTransfers() {
-  if (!state.paired) return;
+  if (!state.paired || _pollBusy) return; // never stack polls on a jammed link
+  _pollBusy = true;
+  const _ctl = new AbortController();
+  const _tm = setTimeout(() => _ctl.abort(), 5000);
   try {
     const res = await fetch('/api/transfer/pending', {
       headers: authHeaders(),
       credentials: 'include',
+      signal: _ctl.signal,
     });
     if (!res.ok) return;
     const data = await res.json();
@@ -1172,9 +1418,17 @@ async function checkIncomingTransfers() {
         state.autoStarted.delete(tid);
       }
     }
+    // Native downloads keep running after the browser closes; the PC drops the
+    // entry when it has served the whole file — that's our "saved" signal.
+    for (const [tid, dl] of [...state.downloads]) {
+      if (dl.status === 'direct' && !live.has(tid)) {
+        state.downloads.delete(tid);
+        state.recentlySaved.set(tid, { expiresAt: Date.now() + 8000, name: dl.name || 'File', size: dl.total || 0 });
+      }
+    }
     renderReceivedList();
     autoReceiveTick();
-  } catch {}
+  } catch {} finally { clearTimeout(_tm); _pollBusy = false; }
 }
 
 // Auto-receive: start downloading pending transfers WITHOUT waiting for a
@@ -1215,7 +1469,7 @@ function receivedRowHtml(t) {
       <div class="recv-status">
         <span>${status === 'direct'
           ? 'Saving via system download manager — check the notification shade'
-          : `Receiving — ${formatBytes(dl.sent)} / ${formatBytes(t.fileSize)}${speedLabelFor(dl.speed)}`}</span>
+          : (dl.sent > 0 ? `Receiving — ${formatBytes(dl.sent)} / ${formatBytes(t.fileSize)}${speedLabelFor(dl.speed)}` : 'Connecting to PC · preparing first data…')}</span>
         <span class="meta-pct">${pct.toFixed(0)}%</span>
       </div>` : '';
   return `
@@ -1312,48 +1566,30 @@ async function startDownload(t) {
   });
   renderReceivedSoon();
   try {
-    // Authoritative copy of the name from the manifest (handles renames).
+    // Name lookup runs IN PARALLEL with the file request (no serial round trip).
+    const namePromise = (async () => {
+      let fileName = t.fileName;
+      try {
+        const mRes = await fetch(`/api/transfer/${tid}/manifest`, { headers: authHeaders(), credentials: 'include' });
+        if (mRes.ok) {
+          const m = await mRes.json();
+          if (m.fileName) fileName = String(m.fileName).split(/[\\/]/).pop() || m.fileName;
+        }
+      } catch {}
+      return fileName;
+    })();
     let fileName = t.fileName;
-    try {
-      const mRes = await fetch(`/api/transfer/${tid}/manifest`, {
-        headers: authHeaders(),
-        credentials: 'include',
-      });
-      if (mRes.ok) {
-        const m = await mRes.json();
-        if (m.fileName) fileName = String(m.fileName).split(/[\\/]/).pop() || m.fileName;
-        if (m.fileSize) state.downloads.get(tid).total = m.fileSize;
-      }
-    } catch {}
 
     const size = state.downloads.get(tid).total || t.fileSize;
-    if (canStreamInPage() && size <= STREAM_SAVE_LIMIT) {
-      const url = await streamDownload(tid, fileName, size);
-      await ackTransfer(tid);
-      state.downloads.delete(tid);
-      // Keep the blob URL around briefly so "save again" can re-trigger the
-      // platform save flow if the browser blocked the automatic one.
-      state.recentlySaved.set(tid, { expiresAt: Date.now() + 8000, name: fileName, size, url });
-      toast(fileName + ' saved to your device');
-    } else {
-      // Opera Mini / legacy browsers / huge files: hand the transfer to the
-      // browser's own download manager. The server sends Content-Type +
-      // Content-Disposition so the real filename and extension survive.
+    {
+      // Native download manager for every file: it keeps running after the
+      // browser is closed. The server sends Content-Type + Content-Disposition
+      // so the real filename and extension survive.
+      fileName = await namePromise;
       directDownload(tid);
-      state.downloads.get(tid).status = 'direct';
+      Object.assign(state.downloads.get(tid), { status: 'direct', name: fileName });
       renderReceivedSoon();
       toast('Download started — check the notification shade');
-      // Give the user time to finish in the system downloader, then stop
-      // advertising the file so it disappears from "From desktop".
-      setTimeout(async () => {
-        const dl = state.downloads.get(tid);
-        if (dl && dl.status === 'direct') {
-          try { await ackTransfer(tid); } catch {}
-          state.downloads.delete(tid);
-          state.recentlySaved.set(tid, { expiresAt: Date.now() + 8000, name: fileName, size });
-          renderReceivedSoon();
-        }
-      }, 3 * 60 * 1000);
     }
     renderReceivedSoon();
   } catch (err) {
@@ -1379,7 +1615,7 @@ function updateDownloadProgress(tid, sent) {
 }
 
 // Stream the whole file over ONE request with exact in-page progress.
-async function streamDownload(tid, fileName, totalSize) {
+async function streamDownload(tid, namePromise, totalSize) {
   const res = await fetch(`/api/transfer/${tid}/file`, {
     headers: authHeaders(),
     credentials: 'include',
@@ -1397,6 +1633,7 @@ async function streamDownload(tid, fileName, totalSize) {
   }
   // Assemble with the correct MIME type so the platform treats it as the real
   // file type, and save under the true name — video.mp4 stays video.mp4.
+  const fileName = await namePromise;
   const blob = new Blob(parts, { type: mimeForName(fileName) });
   const url = URL.createObjectURL(blob);
   triggerSavedDownload(url, fileName);

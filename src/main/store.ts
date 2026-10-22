@@ -44,6 +44,9 @@ export interface Settings {
   // How throughput is DISPLAYED on both ends (PC + mirrored to the phone via
   // /api/state): megabits, megabytes, gigabytes or gigabits per second.
   speedUnit?: 'mbps' | 'mBps' | 'gBps' | 'gbps';   // default 'mBps'
+  // Custom folder for incoming files/folders. Empty/undefined = default
+  // (Downloads/LANBeam).
+  downloadDir?: string;
 }
 
 export interface TransferHistoryEntry {
@@ -97,22 +100,45 @@ export class StateStore {
         localDeviceId: uuidv4(),
       },
     });
+    // In-memory cache: every read is free, every write is debounced into ONE
+    // disk flush. electron-store writes synchronously (whole JSON file) on
+    // each set(), which stalled the main process on every heartbeat/chunk.
+    this.cache = { ...(this.store.store as AppState) };
+  }
+
+  private cache: AppState;
+  private flushTimer: NodeJS.Timeout | null = null;
+
+  private read<K extends keyof AppState>(key: K): AppState[K] {
+    return this.cache[key];
+  }
+
+  private write<K extends keyof AppState>(key: K, value: AppState[K]): void {
+    this.cache[key] = value;
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => { this.flushTimer = null; this.flush(); }, 400);
+  }
+
+  /** Persist now (called on quit). */
+  flush(): void {
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+    try { this.store.store = this.cache; } catch { /* best-effort */ }
   }
 
   get settings(): Settings {
-    return { ...this.store.get('settings') };
+    return { ...this.read('settings') };
   }
 
   updateSettings(patch: Partial<Settings>): Settings {
-    const next = { ...this.store.get('settings'), ...patch };
+    const next = { ...this.read('settings'), ...patch };
     // Security: never persist acceptUnpairedAuto=true.
     next.acceptUnpairedAuto = false;
-    this.store.set('settings', next);
+    this.write('settings', next);
     return next;
   }
 
   get pairedDevices(): PairedDevice[] {
-    return [...this.store.get('pairedDevices')];
+    return [...this.read('pairedDevices')];
   }
 
   addPairedDevice(device: PairedDevice): void {
@@ -134,16 +160,16 @@ export class StateStore {
         return offlineMs < 2 * 60 * 1000;
       });
     devices.unshift(device);
-    this.store.set('pairedDevices', devices);
+    this.write('pairedDevices', devices);
   }
 
   /** Drop records that haven't been seen for `maxAgeMs` (default 90 days). */
   prunePairedDevices(maxAgeMs = 90 * 24 * 60 * 60 * 1000): number {
     const cutoff = Date.now() - maxAgeMs;
-    const devices = this.store.get('pairedDevices');
+    const devices = this.read('pairedDevices');
     const kept = devices.filter(d => (d.lastSeen || 0) >= cutoff);
     const removed = devices.length - kept.length;
-    if (removed > 0) this.store.set('pairedDevices', kept);
+    if (removed > 0) this.write('pairedDevices', kept);
     return removed;
   }
 
@@ -155,54 +181,51 @@ export class StateStore {
    */
   clearOfflineDevices(onlineMs = 2 * 60 * 1000): { removed: number; kept: PairedDevice[] } {
     const cutoff = Date.now() - onlineMs;
-    const devices = this.store.get('pairedDevices');
+    const devices = this.read('pairedDevices');
     const kept = devices.filter(d => (d.lastSeen || 0) >= cutoff);
     const removed = devices.length - kept.length;
-    if (removed > 0) this.store.set('pairedDevices', kept);
+    if (removed > 0) this.write('pairedDevices', kept);
     return { removed, kept };
   }
 
   /** Remove any duplicate deviceIds, keeping the one with the newest lastSeen. */
   deduplicatePairedDevices(): void {
     const seen = new Map<string, PairedDevice>();
-    for (const d of this.store.get('pairedDevices')) {
+    for (const d of this.read('pairedDevices')) {
       const existing = seen.get(d.deviceId);
       if (!existing || d.lastSeen > existing.lastSeen) seen.set(d.deviceId, d);
     }
     const list = [...seen.values()].sort((a, b) => b.lastSeen - a.lastSeen);
-    this.store.set('pairedDevices', list);
+    this.write('pairedDevices', list);
   }
 
   removePairedDevice(deviceId: string): void {
-    this.store.set('pairedDevices', this.store.get('pairedDevices').filter(d => d.deviceId !== deviceId));
+    this.write('pairedDevices', this.read('pairedDevices').filter(d => d.deviceId !== deviceId));
   }
 
   touchPairedDevice(deviceId: string, meta?: { ip?: string; userAgent?: string }): void {
-    const devices = this.store.get('pairedDevices').map(d =>
-      d.deviceId === deviceId
-        ? {
-            ...d,
-            lastSeen: Date.now(),
-            // Keep the live network identity fresh so the device popup always
-            // reflects the current connection, even if DHCP re-assigns the IP.
-            ip: meta?.ip ?? d.ip,
-            userAgent: meta?.userAgent ?? d.userAgent,
-          }
-        : d
-    );
-    this.store.set('pairedDevices', devices);
+    const d = this.read('pairedDevices').find(x => x.deviceId === deviceId);
+    if (!d) return;
+    const now = Date.now();
+    const changed = (meta?.ip && meta.ip !== d.ip) || (meta?.userAgent && meta.userAgent !== d.userAgent);
+    // Presence only needs ~3s granularity; skip the write storm otherwise.
+    if (!changed && now - (d.lastSeen || 0) < 3000) return;
+    d.lastSeen = now;
+    if (meta?.ip) d.ip = meta.ip;
+    if (meta?.userAgent) d.userAgent = meta.userAgent;
+    this.write('pairedDevices', this.read('pairedDevices'));
   }
 
   get history(): TransferHistoryEntry[] {
-    return [...this.store.get('history')];
+    return [...this.read('history')];
   }
 
   addHistory(entry: TransferHistoryEntry): void {
-    const history = [entry, ...this.store.get('history')].slice(0, 500);
-    this.store.set('history', history);
+    const history = [entry, ...this.read('history')].slice(0, 500);
+    this.write('history', history);
   }
 
   get localDeviceId(): string {
-    return this.store.get('localDeviceId');
+    return this.read('localDeviceId');
   }
 }

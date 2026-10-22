@@ -48,12 +48,22 @@ const api = {
       ipcRenderer.invoke('transfer:send', opts),
     // Answer the desktop's Accept / Decline card for held inbound transfers.
     respond: (requestId: string, accepted: boolean) => ipcRenderer.invoke('transfer:respond', requestId, accepted),
+    cancel: (transferId: string) => ipcRenderer.invoke('transfer:cancel', transferId),
     pickFiles: () => ipcRenderer.invoke('transfer:pick-files'),
     pickDownloadDir: () => ipcRenderer.invoke('transfer:pick-download-dir'),
+    resetDownloadDir: () => ipcRenderer.invoke('transfer:reset-download-dir'),
+    defaultDownloadDir: () => ipcRenderer.invoke('transfer:default-download-dir'),
     onEvent: (cb: (ev: any) => void) => {
       const sub = (_e: any, ev: any) => cb(ev);
       ipcRenderer.on('transfer:event', sub);
       return () => ipcRenderer.removeListener('transfer:event', sub);
+    },
+  },
+  network: {
+    onChanged: (cb: (d: { ipUrl: string; httpUrl: string; noNetwork?: boolean }) => void) => {
+      const sub = (_e: any, d: any) => cb(d);
+      ipcRenderer.on('network:changed', sub);
+      return () => ipcRenderer.removeListener('network:changed', sub);
     },
   },
   wifi: {

@@ -136,6 +136,7 @@
             <div class="progress-fill" id="progress-fill" style="width:0%"></div>
           </div>
           <div class="progress-stats" id="progress-stats">0% · 0 / 0 · ETA —</div>
+          <button type="button" class="ghost-btn" id="transfer-cancel" style="margin-top:8px">Cancel transfer</button>
         </div>
         <div class="transfer-speed">
           <div class="speed-readout">
@@ -248,6 +249,14 @@
               <div class="dropdown-item selected" data-value="auto">Auto-receive (instant)</div>
               <div class="dropdown-item" data-value="ask">Ask every time</div>
             </div>
+          </div>
+        </div>
+        <div class="setting" style="grid-column:1/-1">
+          <span class="setting-label">Save received files to</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="setting-downloaddir" readonly style="flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid var(--border,rgba(255,255,255,.12));background:transparent;color:inherit;font:inherit;font-size:12px;text-overflow:ellipsis" />
+            <button type="button" class="ghost-btn" id="setting-downloaddir-pick">Choose / create…</button>
+            <button type="button" class="ghost-btn" id="setting-downloaddir-reset">Default</button>
           </div>
         </div>
         <div class="setting">
