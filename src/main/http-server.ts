@@ -33,10 +33,10 @@ import { TransferOrchestrator } from './transfer-orchestrator';
 import { queryWifiInfo } from './wifi-info';
 import { log } from './logger';
 
-const PHONE_DIR = path.join(__dirname, '..', '..', 'src', 'phone');
+const PHONE_DIR = path.join(__dirname, '..', 'phone');
 // Font files live with the desktop renderer; the phone web UI reuses the exact
 // same families (Figtree / Outfit) so both ends of a transfer share one look.
-const FONTS_DIR = path.join(__dirname, '..', '..', 'src', 'renderer', 'fonts');
+const FONTS_DIR = path.join(__dirname, '..', 'renderer', 'fonts');
 
 export interface HttpServerOptions {
   port: number;
@@ -857,16 +857,30 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
   });
   server.on('clientError', (_err, sock) => { try { sock.destroy(); } catch {} });
 
-  return new Promise((resolve) => {
-    server.listen(opts.port, () => {
-      const addr = server.address();
-      const port = typeof addr === 'object' && addr ? addr.port : opts.port;
-      const url = `http://${opts.hostname}:${port}`;
-      resolve({
-        port,
-        url,
-        close: () => new Promise<void>((r) => server.close(() => r())),
+  return new Promise((resolve, reject) => {
+    const tryListen = (port: number) => {
+      server.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          // Preferred port is taken (e.g. another LANBeam instance or dev server).
+          // Fall back to an OS-assigned random port so the app always starts.
+          log.warn(`[http] Port ${port} in use — falling back to a random port`);
+          server.removeAllListeners('error');
+          tryListen(0);
+        } else {
+          reject(err);
+        }
       });
-    });
+      server.listen(port, () => {
+        const addr = server.address();
+        const boundPort = typeof addr === 'object' && addr ? addr.port : port;
+        const url = `http://${opts.hostname}:${boundPort}`;
+        resolve({
+          port: boundPort,
+          url,
+          close: () => new Promise<void>((r) => server.close(() => r())),
+        });
+      });
+    };
+    tryListen(opts.port);
   });
 }
