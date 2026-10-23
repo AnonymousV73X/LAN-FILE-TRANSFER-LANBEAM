@@ -879,8 +879,35 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   .content { padding: 16px; }
   .settings-grid { grid-template-columns: 1fr; }
   .device-cards { grid-auto-columns: minmax(220px, 1fr); }
-  .transfer-card { grid-template-columns: 1fr; gap: 12px; }
-  .transfer-speed { align-items: flex-start; }
+  .transfer-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    align-items: stretch;
+  }
+  .transfer-info { order: 1; }
+  .transfer-progress {
+    order: 2;
+    display: flex;
+    flex-direction: column;
+  }
+  .transfer-speed {
+    order: 3;
+    align-items: flex-start;
+    margin-top: 4px;
+    padding-bottom: 2px;
+  }
+  #transfer-cancel {
+    order: 4;
+    align-self: flex-start;
+    margin-top: 10px !important;
+  }
+  .float-transfer {
+    bottom: 14px;
+    right: 14px;
+    left: 14px;
+    width: auto;
+  }
 }
 
 @media (max-width: 520px) {
@@ -1568,3 +1595,78 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   z-index: 950;
 }
 .lanbeam-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+
+/* ===== Floating Transfer Status Card (visible across non-Home views) ===== */
+.float-transfer {
+  position: fixed;
+  bottom: 22px;
+  right: 22px;
+  width: min(340px, calc(100vw - 44px));
+  background: var(--bg-elev-2);
+  border: 1px solid var(--accent-color);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), 0 0 18px var(--accent-soft);
+  z-index: 850;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.float-transfer[hidden] {
+  display: none !important;
+}
+.float-transfer:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.8), 0 0 24px rgba(var(--accent-rgb), 0.35);
+}
+.ft-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.ft-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.ft-cancel {
+  padding: 4px 10px !important;
+  font-size: 11px !important;
+  height: auto !important;
+  flex-shrink: 0;
+}
+.ft-bar {
+  height: 5px;
+  background: var(--bg-elev-3);
+  border-radius: 3px;
+  overflow: hidden;
+  width: 100%;
+}
+.ft-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-color);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.6);
+  border-radius: 3px;
+  transition: width 0.2s linear;
+}
+.ft-stats {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
