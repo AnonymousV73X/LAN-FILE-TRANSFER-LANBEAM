@@ -447,9 +447,27 @@ function renderDevices() {
   if (!host) return;
   const ONLINE_MS = 30 * 1000; // 30s = online
   const now = Date.now();
-  const activeDevices = state.pairedDevices
-    .filter((d) => now - d.lastSeen < ONLINE_MS)
+
+  const activeTransferPeer = state.currentTransferId
+    ? (state.currentTransfer?.peerName ?? null)
+    : null;
+
+  const rawActive = state.pairedDevices
+    .filter((d) => {
+      if (now - d.lastSeen < ONLINE_MS) return true;
+      if (activeTransferPeer && d.name === activeTransferPeer) return true;
+      return false;
+    })
     .sort((a, b) => b.lastSeen - a.lastSeen);
+
+  // Deduplicate by name and IP to ensure only 1 card per physical device
+  const seenKeys = new Set();
+  const activeDevices = rawActive.filter((d) => {
+    const key = (d.name || "") + "::" + (d.ip || d.deviceId);
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
   if (!activeDevices.length) {
     host.innerHTML = `<div class="empty-hint">No active devices online. Just quickly scan QR CODE and connect your device (Make sure it's on the same network).</div>`;
   } else {
