@@ -826,7 +826,15 @@ function releaseWakeLock() {
   _wakeLock = null;
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state.queue.some(q => q.status === 'sending')) holdWakeLock();
+  if (document.visibilityState === 'visible') {
+    if (state.queue.some(q => q.status === 'sending')) holdWakeLock();
+  } else {
+    // Tab going hidden — warn the user if uploads are active.
+    // This fires before the XHR is aborted, so it's the last chance to notify.
+    if (state.queue.some(q => q.status === 'sending' || q.status === 'queued')) {
+      toast('⏸️ Transfer paused — keep LANBeam open to continue');
+    }
+  }
 });
 
 // Warn the user before they accidentally close the tab during an active upload.
@@ -844,12 +852,19 @@ window.addEventListener('beforeunload', (e) => {
 async function restoreUploads() {
   const rows = await _idb.all();
   if (!rows || !rows.length) return;
+  let added = 0;
   for (const r of rows) {
     if (state.queue.some(q => q.id === r.id)) continue;
     state.queue.push({ ...r, sent: 0, status: 'queued', chunks: [] });
+    added++;
   }
+  if (!added) return;
   renderQueue();
-  pump();
+  // Let the page settle for 1.5s before resuming so auth/pairing completes first.
+  setTimeout(() => {
+    toast('▶️ Resuming ' + added + ' interrupted transfer' + (added > 1 ? 's' : '') + '…');
+    pump();
+  }, 1500);
 }
 
 function commitFiles(files, target, keepCopy) {
@@ -973,11 +988,18 @@ function xhrUpload(url, headers, body, onProgress) {
     for (const k in headers) x.setRequestHeader(k, headers[k]);
     // Stall watchdog: a jammed Wi-Fi link can hang a socket forever. If no
     // bytes move for 25s, abort so the caller's retry opens a fresh connection.
-    let wd = setTimeout(() => x.abort(), 25000);
-    const kick = () => { clearTimeout(wd); wd = setTimeout(() => x.abort(), 25000); };
+    // 8s stall watchdog — shorter than the previous 25s so retries start
+    // quickly when the mobile OS freezes or kills the connection.
+    let wd = setTimeout(() => x.abort(), 8000);
+    const kick = () => { clearTimeout(wd); wd = setTimeout(() => x.abort(), 8000); };
+    // Abort immediately when the tab goes invisible — the OS will likely freeze
+    // the XHR anyway; abort first so pump() retries the instant we come back.
+    const _onHide = () => { if (document.visibilityState === 'hidden') x.abort(); };
+    document.addEventListener('visibilitychange', _onHide, { once: true });
     x.upload.onprogress = (e) => { kick(); if (e.lengthComputable) onProgress(e.loaded); };
-    x.onabort = () => { clearTimeout(wd); reject(new Error('stalled')); };
-    x.onload = () => { clearTimeout(wd); resolve(x.status); };
+    const _cleanup = () => { clearTimeout(wd); document.removeEventListener('visibilitychange', _onHide); };
+    x.onabort = () => { _cleanup(); reject(new Error('stalled')); };
+    x.onload = () => { _cleanup(); resolve(x.status); };
     x.onerror = () => { clearTimeout(wd); reject(new Error('network error')); };
     x.ontimeout = () => reject(new Error('timeout'));
     x.send(body);
@@ -1201,7 +1223,7 @@ document.addEventListener('visibilitychange', () => {
         needPump = true;
       }
     }
-    if (needPump) { renderQueue(); pump(); }
+    if (needPump) { renderQueue(); pump(); toast('▶️ Resuming transfer…'); }
   }
 });
 window.addEventListener('pageshow', syncQueue);

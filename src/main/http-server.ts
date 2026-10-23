@@ -796,12 +796,17 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       res.writeHead(404); res.end('Not found');
     } catch (err) {
       const code = (err as any)?.code;
-      if (code === 'ECONNRESET' || (err as any)?.message === 'aborted') {
-        log.debug('[http-server] client dropped mid-request (flaky link)');
+      const msg = (err as any)?.message ?? '';
+      const isClientDrop = code === 'ECONNRESET' || msg === 'aborted' ||
+        msg === 'client aborted' || msg === 'client closed' || code === 'EPIPE';
+      if (isClientDrop) {
+        // Phone closed the connection mid-request (browser killed/backgrounded) —
+        // log at debug level only; the chunk will simply be retried on reconnect.
+        log.debug('[http-server] client dropped mid-request:', msg || code);
       } else {
         console.error('[http-server] error:', err);
       }
-      res.writeHead(500); res.end('Internal error');
+      if (!res.headersSent) { res.writeHead(500); res.end('Internal error'); }
     }
   });
 
