@@ -51,12 +51,10 @@ pub fn should_compress_chunk(buf: Buffer, already_compressed: bool) -> bool {
 // ---------------------------------------------------------------------------
 // Compression (async — zstd can be CPU-heavy on big chunks)
 // ---------------------------------------------------------------------------
-#[napi]
 pub struct CompressTask {
     pub buf: Vec<u8>,
 }
 
-#[napi]
 impl Task for CompressTask {
     type Output = Vec<u8>;
     type JsValue = Buffer;
@@ -66,8 +64,8 @@ impl Task for CompressTask {
             .map_err(|e| Error::from_reason(format!("zstd compress: {e}")))
     }
 
-    fn resolve(&mut self, env: Env, output: Self::Output) -> NapiResult<Self::JsValue> {
-        env.create_buffer_with_data(output).map(|b| b.into())
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> NapiResult<Self::JsValue> {
+        Ok(output.into())
     }
 }
 
@@ -76,12 +74,10 @@ pub fn compress_chunk(buf: Buffer) -> AsyncTask<CompressTask> {
     AsyncTask::new(CompressTask { buf: buf.to_vec() })
 }
 
-#[napi]
 pub struct DecompressTask {
     pub buf: Vec<u8>,
 }
 
-#[napi]
 impl Task for DecompressTask {
     type Output = Vec<u8>;
     type JsValue = Buffer;
@@ -91,8 +87,8 @@ impl Task for DecompressTask {
             .map_err(|e| Error::from_reason(format!("zstd decompress: {e}")))
     }
 
-    fn resolve(&mut self, env: Env, output: Self::Output) -> NapiResult<Self::JsValue> {
-        env.create_buffer_with_data(output).map(|b| b.into())
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> NapiResult<Self::JsValue> {
+        Ok(output.into())
     }
 }
 
@@ -287,6 +283,6 @@ impl Task for GenBenchmarkFileTask {
 }
 
 #[napi]
-pub fn generate_synthetic_benchmark_file(path: String, size_mb: u64, mode: String) -> AsyncTask<GenBenchmarkFileTask> {
-    AsyncTask::new(GenBenchmarkFileTask { path, size_mb, mode })
+pub fn generate_synthetic_benchmark_file(path: String, size_mb: f64, mode: String) -> AsyncTask<GenBenchmarkFileTask> {
+    AsyncTask::new(GenBenchmarkFileTask { path, size_mb: size_mb as u64, mode })
 }

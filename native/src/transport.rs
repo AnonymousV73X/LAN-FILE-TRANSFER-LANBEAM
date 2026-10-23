@@ -14,8 +14,9 @@
 //!     each stream sends one chunk at a time (length-prefixed). Reuses
 //!     QUIC's per-stream flow control and avoids head-of-line blocking.
 
-use std::{error::Error, sync::Arc};
+use std::{error::Error, sync::Arc, net::SocketAddr};
 use quinn::{Endpoint, ServerConfig, ClientConfig};
+use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::sync::Mutex;
 use once_cell::sync::Lazy;
@@ -48,7 +49,8 @@ fn server_config(cert: CertificateDer<'static>, key: PrivateKeyDer<'static>) -> 
         .with_no_client_auth()
         .with_single_cert(vec![cert], key)?;
     certs.max_early_data_size = 0;
-    Ok(ServerConfig::with_crypto(Arc::new(certs)))
+    let quic_cfg = QuicServerConfig::try_from(certs)?;
+    Ok(ServerConfig::with_crypto(Arc::new(quic_cfg)))
 }
 
 pub async fn start_quic_server(port: u16, _cert: &[u8], _key: &[u8]) -> Result<(u16, String), Box<dyn Error + Send + Sync>> {
@@ -56,24 +58,24 @@ pub async fn start_quic_server(port: u16, _cert: &[u8], _key: &[u8]) -> Result<(
     // The caller's cert/key args are kept in the API for future flexibility.
     let (cert, key) = self_signed_cert()?;
     let cfg = server_config(cert, key)?;
-    let mut endpoints = Endpoint::server(cfg, ([0, 0, 0, 0], port).into())?;
-    let actual_port = endpoints.local_addr()?.port();
+    let endpoint = Endpoint::server(cfg, ([0, 0, 0, 0], port).into())?;
+    let actual_port = endpoint.local_addr()?.port();
 
     let server_id = format!("quic-{}", actual_port);
     let id_clone = server_id.clone();
+    // Clone so we can stash it AND use it in the accept loop.
+    let endpoint_for_task = endpoint.clone();
 
-    // Spawn the accept loop. For v1 this is a placeholder — actual chunk
-    // reception goes through the HTTP path. When a desktop-to-desktop QUIC
-    // flow is implemented, this loop reads length-prefixed frames per stream
-    // and dispatches them to the transfer orchestrator.
+    // Spawn the accept loop.
     tokio::spawn(async move {
-        while let Some(conn) = endpoints.accept().await {
+        let ep = endpoint_for_task;
+        while let Some(conn) = ep.accept().await {
             let _ = handle_connection(conn).await;
         }
     });
 
     // Stash endpoint so caller can close it later.
-    SERVERS.lock().await.insert(id_clone, endpoints);
+    SERVERS.lock().await.insert(id_clone, endpoint);
 
     Ok((actual_port, server_id))
 }
@@ -133,14 +135,22 @@ pub async fn send_file_quic(
     let started = std::time::Instant::now();
 
     // Connect — TOFU: trust the remote's self-signed cert via a custom verifier.
-    let client_cfg = ClientConfig::with_custom_certificate_verifier(Arc::new(TrustAllVerifier));
-    let endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
-    let connect = endpoint.connect((host, port).into(), "lanbeam.local")?;
+    let tls_cfg = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(TrustAllVerifier))
+        .with_no_client_auth();
+    let quic_client_cfg = quinn::crypto::rustls::QuicClientConfig::try_from(tls_cfg)?;
+    let client_cfg = ClientConfig::new(Arc::new(quic_client_cfg));
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse::<SocketAddr>()?)?;
+    endpoint.set_default_client_config(client_cfg);
+    // Parse host as an IP (LAN transfers always use bare IPs, not hostnames).
+    let remote_addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+    let connect = endpoint.connect(remote_addr, "lanbeam.local")?;
     let connection = connect.await?;
 
     // Read the file in chunks and send each over its own bi-stream.
-    let mut file = tokio::fs::File::open(file_path).await?;
-    use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+    let _file = tokio::fs::File::open(file_path).await?;
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
     let total_chunks = ((file_size + chunk_size as u64 - 1) / chunk_size as u64) as usize;
     let max_streams = max_parallel_streams.max(1);
@@ -169,8 +179,7 @@ pub async fn send_file_quic(
                 header[4..8].copy_from_slice(&(length as u32).to_be_bytes());
                 send.write_all(&header).await?;
                 send.write_all(&buf).await?;
-                send.finish().await?;
-                // Wait for ack
+                send.finish()?;
                 let mut ack = [0u8; 1];
                 use tokio::io::AsyncReadExt;
                 let _ = recv.read_exact(&mut ack).await;
@@ -213,6 +222,7 @@ pub async fn send_file_quic(
 
 // TrustAllVerifier — TOFU. Acceptable on a LAN where the user has already
 // scanned the QR to pair. NOT acceptable on the open internet.
+#[derive(Debug)]
 struct TrustAllVerifier;
 impl rustls::client::danger::ServerCertVerifier for TrustAllVerifier {
     fn verify_server_cert(

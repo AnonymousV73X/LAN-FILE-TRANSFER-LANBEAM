@@ -5,7 +5,7 @@
 //! (mp4, mkv, jpg, png, zip, etc.). Use zstd at level 1–3 — speed > ratio
 //! since the WiFi link, not the CPU, is the bottleneck once decompressed.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Write};
 
 /// Sampled Shannon entropy estimate (bits/byte, 0..=8) using a 64KB sample.
 /// Below ~7.5 bits/byte, zstd level 1 typically shrinks the data.
@@ -37,10 +37,10 @@ pub fn should_compress(buf: &[u8]) -> bool {
 }
 
 pub fn compress_zstd(input: &[u8], level: i32) -> std::io::Result<Vec<u8>> {
-    // zstd::encode_all takes a reader + level; wrap our slice in a Cursor.
     let mut out = Vec::with_capacity(input.len() / 2);
-    let mut reader = Cursor::new(input);
-    zstd::stream::Encoder::new(&mut out, level)?.finish()?;
+    let mut encoder = zstd::stream::Encoder::new(&mut out, level)?;
+    encoder.write_all(input)?;
+    encoder.finish()?;
     Ok(out)
 }
 
