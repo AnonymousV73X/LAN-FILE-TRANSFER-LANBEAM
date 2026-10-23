@@ -2345,3 +2345,84 @@ async function boot() {
 }
 
 boot().catch((err) => console.error("renderer boot failed:", err));
+
+// ─────────────────────────────────────────────────────────────────────
+// OTA Update Banner — fires when main process detects a newer release.
+// Shows a slim top bar: "Update X.Y.Z ready — Restart to install" with
+// a progress bar while downloading. Identical UX to NovaTune.
+// ─────────────────────────────────────────────────────────────────────
+(function initUpdateBanner() {
+  if (!window.lanbeam?.update) return;
+
+  // Inject banner element once
+  const banner = document.createElement('div');
+  banner.id = 'update-banner';
+  banner.style.cssText = [
+    'display:none',
+    'position:fixed',
+    'bottom:0',
+    'left:0',
+    'right:0',
+    'z-index:9999',
+    'background:var(--accent,#00c2a8)',
+    'color:#000',
+    'font-size:13px',
+    'font-weight:600',
+    'padding:10px 18px',
+    'display:none',
+    'align-items:center',
+    'gap:12px',
+    'box-shadow:0 -2px 16px rgba(0,0,0,.4)',
+  ].join(';');
+
+  banner.innerHTML = `
+    <span id="update-msg" style="flex:1">🚀 Update available — downloading…</span>
+    <div id="update-progress-wrap" style="width:120px;height:6px;background:rgba(0,0,0,.2);border-radius:3px;overflow:hidden;display:none">
+      <div id="update-progress-bar" style="height:100%;width:0%;background:#000;border-radius:3px;transition:width .3s"></div>
+    </div>
+    <button id="update-install-btn" style="display:none;background:#000;color:var(--accent,#00c2a8);border:none;border-radius:6px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">
+      Restart &amp; Install
+    </button>
+    <button id="update-dismiss-btn" style="background:transparent;border:none;color:#000;opacity:.6;font-size:16px;cursor:pointer;padding:0 4px;line-height:1">&times;</button>
+  `;
+  document.body.appendChild(banner);
+
+  const msg   = document.getElementById('update-msg');
+  const pWrap = document.getElementById('update-progress-wrap');
+  const pBar  = document.getElementById('update-progress-bar');
+  const iBtn  = document.getElementById('update-install-btn');
+  const dBtn  = document.getElementById('update-dismiss-btn');
+
+  function showBanner() { banner.style.display = 'flex'; }
+  function hideBanner() { banner.style.display = 'none'; }
+
+  dBtn?.addEventListener('click', hideBanner);
+  iBtn?.addEventListener('click', () => window.lanbeam.update.install());
+
+  // Main emits 'update:available' when a newer release is found
+  window.lanbeam.update.onAvailable((info) => {
+    if (msg) msg.textContent = `🚀 LANBeam ${info.version} is available — downloading update…`;
+    showBanner();
+  });
+
+  // Download progress
+  window.lanbeam.update.onProgress((p) => {
+    if (pWrap) pWrap.style.display = 'block';
+    if (pBar)  pBar.style.width = p.percent.toFixed(1) + '%';
+    const mb = (p.transferred / 1048576).toFixed(1);
+    const tot = (p.total / 1048576).toFixed(1);
+    if (msg) msg.textContent = `⬇ Downloading update… ${mb} / ${tot} MB`;
+  });
+
+  // Update fully downloaded — show install button
+  window.lanbeam.update.onDownloaded(() => {
+    if (pWrap) pWrap.style.display = 'none';
+    if (msg)   msg.textContent = '✅ Update downloaded — restart to install';
+    if (iBtn)  iBtn.style.display = 'inline-block';
+    showBanner();
+  });
+
+  // Error — silently hide (don't panic the user over a failed update check)
+  window.lanbeam.update.onError(() => hideBanner());
+})();
+

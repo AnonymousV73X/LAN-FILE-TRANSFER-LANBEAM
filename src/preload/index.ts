@@ -88,6 +88,31 @@ const api = {
     // Prevent display sleep/dim while the enlarged QR lightbox is open.
     setPowerSave: (on: boolean) => ipcRenderer.invoke('app:power-save', on),
   },
+  update: {
+    check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.invoke('update:download'),
+    install: () => ipcRenderer.invoke('update:install'),
+    onAvailable: (cb: (info: { version: string; releaseNotes: string; releaseName: string }) => void) => {
+      const sub = (_e: any, info: any) => cb(info);
+      ipcRenderer.on('update:available', sub);
+      return () => ipcRenderer.removeListener('update:available', sub);
+    },
+    onProgress: (cb: (p: { percent: number; transferred: number; total: number; bytesPerSecond: number }) => void) => {
+      const sub = (_e: any, p: any) => cb(p);
+      ipcRenderer.on('update:download-progress', sub);
+      return () => ipcRenderer.removeListener('update:download-progress', sub);
+    },
+    onDownloaded: (cb: () => void) => {
+      const sub = () => cb();
+      ipcRenderer.on('update:downloaded', sub);
+      return () => ipcRenderer.removeListener('update:downloaded', sub);
+    },
+    onError: (cb: (e: { message: string }) => void) => {
+      const sub = (_e: any, e: any) => cb(e);
+      ipcRenderer.on('update:error', sub);
+      return () => ipcRenderer.removeListener('update:error', sub);
+    },
+  },
 };
 
 try {

@@ -33,7 +33,11 @@ import { initLogger, log } from './logger';
 app.commandLine.appendSwitch('no-proxy-server');
 app.commandLine.appendSwitch('disable-background-networking');
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = require('../../package.json').version || '1.0.0';
+
+// electron-updater is optional — loaded lazily after app.whenReady() so it
+// never blocks startup. Identical pattern to NovaTune.
+let autoUpdater: any = null;
 const DOWNLOAD_DIR = path.join(app.getPath('downloads'), 'LANBeam');
 
 function currentDownloadDir(): string {
@@ -363,6 +367,30 @@ function registerIpc() {
     }
   });
 
+  // ─── OTA Update IPC ──────────────────────────────────────────────────────
+  ipcMain.handle('update:check', async () => {
+    try {
+      const { autoUpdater: au } = require('electron-updater');
+      if (au && app.isPackaged) return await au.checkForUpdates();
+    } catch (err) { console.warn('[update] check failed:', (err as any).message); }
+    return null;
+  });
+
+  ipcMain.handle('update:download', async () => {
+    try {
+      const { autoUpdater: au } = require('electron-updater');
+      if (au && app.isPackaged) await au.downloadUpdate();
+    } catch (err) { console.warn('[update] download failed:', (err as any).message); }
+  });
+
+  ipcMain.handle('update:install', () => {
+    try {
+      const { autoUpdater: au } = require('electron-updater');
+      if (!au) return;
+      au.quitAndInstall(false, true);
+    } catch (err) { console.warn('[update] install failed:', (err as any).message); }
+  });
+
   // Forward orchestrator events to the renderer
   orchestrator!.on('event', (ev: OrchestratorEvent) => {
     mainWindow?.webContents.send('transfer:event', ev);
@@ -547,6 +575,85 @@ async function boot() {
   await buildTray();
 
   startNetworkWatcher();
+
+  // ─── Auto-Updater (NovaTune pattern) ──────────────────────────────────────
+  // Lazy-load electron-updater after the window is ready so it never blocks boot.
+  try {
+    ({ autoUpdater } = require('electron-updater'));
+  } catch (_) {
+    log.warn('[autoUpdater] electron-updater not installed — OTA updates disabled.');
+  }
+
+  if (autoUpdater && app.isPackaged) {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('update-available', (info: any) => {
+      mainWindow?.webContents.send('update:available', {
+        version: info.version,
+        releaseNotes: info.releaseNotes,
+        releaseName: info.releaseName,
+      });
+    });
+
+    autoUpdater.on('update-not-available', () => {
+      mainWindow?.webContents.send('update:not-available');
+    });
+
+    autoUpdater.on('download-progress', (progress: any) => {
+      mainWindow?.webContents.send('update:download-progress', {
+        percent: progress.percent,
+        transferred: progress.transferred,
+        total: progress.total,
+        bytesPerSecond: progress.bytesPerSecond,
+      });
+    });
+
+    autoUpdater.on('update-downloaded', () => {
+      mainWindow?.webContents.send('update:downloaded');
+    });
+
+    autoUpdater.on('error', (err: Error) => {
+      log.error('[autoUpdater] Error:', err.message);
+      mainWindow?.webContents.send('update:error', { message: err.message });
+    });
+
+    // First check: 60s after launch so the UI is fully settled.
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((err: Error) => {
+        log.warn('[autoUpdater] Startup check failed:', err.message);
+      });
+    }, 60_000);
+
+    // Periodic check: every 4 hours (identical to NovaTune).
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }, 4 * 60 * 60 * 1000);
+
+  } else if (!app.isPackaged) {
+    // Dev mode: lightweight GitHub API check — shows the update banner without
+    // a full electron-updater instance (no squirrel, no signing needed).
+    setTimeout(async () => {
+      try {
+        const { net } = await import('electron');
+        const res = await net.fetch(
+          'https://api.github.com/repos/AnonymousV73X/LAN-FILE-TRANSFER-LANBEAM/releases/latest',
+          { headers: { 'User-Agent': 'LANBeam-Update-Check' } },
+        );
+        if (res.ok) {
+          const data: any = await res.json();
+          const latest = (data.tag_name || '').replace(/^v/, '');
+          if (latest && latest !== APP_VERSION) {
+            mainWindow?.webContents.send('update:available', {
+              version: latest,
+              releaseNotes: data.body || '',
+              releaseName: data.name || '',
+            });
+          }
+        }
+      } catch (_) {}
+    }, 30_000);
+  }
 
   // Periodically refresh QR (one-time-use tokens) and update tray.
   setInterval(() => refreshQr(), 15 * 60 * 1000);
