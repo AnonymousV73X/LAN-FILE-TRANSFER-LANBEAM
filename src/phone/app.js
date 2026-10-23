@@ -829,6 +829,18 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.queue.some(q => q.status === 'sending')) holdWakeLock();
 });
 
+// Warn the user before they accidentally close the tab during an active upload.
+// Mobile browsers often ignore this event entirely — it's best-effort UX.
+window.addEventListener('beforeunload', (e) => {
+  const active = state.queue.some(q => q.status === 'sending' || q.status === 'queued' || q.status === 'retrying');
+  if (active) {
+    e.preventDefault();
+    // Chrome requires returnValue to be set (legacy spec).
+    e.returnValue = 'File transfer in progress. Leave anyway?';
+    return e.returnValue;
+  }
+});
+
 async function restoreUploads() {
   const rows = await _idb.all();
   if (!rows || !rows.length) return;
@@ -1174,7 +1186,24 @@ async function syncQueue() {
   } catch {} finally { clearTimeout(tm); _syncBusy = false; }
 }
 setInterval(syncQueue, 1200);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncQueue(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    syncQueue();
+    // If the OS froze JS mid-upload (browser backgrounded / screen locked),
+    // the XHR is dead but pump() never ran its finally-block, so the item
+    // is stuck 'sending' with running=false. Reset it to 'queued' and
+    // restart the pump so the upload resumes automatically.
+    let needPump = false;
+    for (const q of state.queue) {
+      if ((q.status === 'sending' || q.status === 'retrying') && !q.running) {
+        q.status = 'queued';
+        q.phase = 'Resuming…';
+        needPump = true;
+      }
+    }
+    if (needPump) { renderQueue(); pump(); }
+  }
+});
 window.addEventListener('pageshow', syncQueue);
 window.addEventListener('online', syncQueue);
 document.addEventListener('click', (e) => {
@@ -1329,7 +1358,19 @@ function registerServiceWorker() {
   // Background tabs throttle timers to ~1/min — poll immediately whenever the
   // user returns to the tab so incoming files start receiving instantly.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') checkIncomingTransfers();
+    if (document.visibilityState === 'visible') {
+      // If the phone was closed mid-download, the OS download manager may have
+      // been interrupted. Clear 'direct' status downloads from the autoStarted
+      // ledger so the next poll re-triggers directDownload() for them.
+      for (const [tid, dl] of state.downloads) {
+        if (dl.status === 'direct') {
+          // Reset: let autoReceiveTick re-fire directDownload for these entries
+          state.downloads.delete(tid);
+          state.autoStarted.delete(tid);
+        }
+      }
+      checkIncomingTransfers();
+    }
   });
 })();
 
