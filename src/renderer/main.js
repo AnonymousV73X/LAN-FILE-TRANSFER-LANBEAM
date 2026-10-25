@@ -2150,6 +2150,41 @@ function showApprovalCard(ev) {
   });
 }
 
+function renderSparklineToSvg(svg, values, tid) {
+  if (!svg) return;
+  if (!values || !values.length) {
+    svg.innerHTML = '';
+    return;
+  }
+  const w = 100, h = 30, pad = 2;
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = max - min || 1;
+  const step = (w - pad * 2) / Math.max(1, values.length - 1);
+  const points = values.map((v, i) => {
+    const x = pad + i * step;
+    const y = pad + (h - pad * 2) * (1 - (v - min) / range);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const rgb = hexToRgb(
+    getComputedStyle(document.documentElement)
+      .getPropertyValue('--accent-color')
+      .trim() || '#00E5FF'
+  );
+  const stroke = rgb ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})` : '#00E5FF';
+  const fillId = 'spark-grad-' + tid;
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="${fillId}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.45"/>
+        <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <polygon points="${pad},${h - pad} ${points.join(' ')} ${w - pad},${h - pad}" fill="url(#${fillId})"/>
+    <polyline points="${points.join(' ')}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+  `;
+}
+
 function _createCardElement(tid, direction = "in") {
   const card = document.createElement("div");
   card.className = "transfer-card";
