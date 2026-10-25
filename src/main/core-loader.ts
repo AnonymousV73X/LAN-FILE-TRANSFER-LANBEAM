@@ -67,6 +67,7 @@ export interface TransferComplete {
   filePath?: string;
   startedAt: number;
   completedAt: number;
+  status?: 'complete' | 'cancelled' | 'failed';
 }
 
 export interface CoreApi {

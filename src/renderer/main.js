@@ -198,6 +198,7 @@ const _viewBinders = {
   devices: () => bindDevices(),
   history: () => renderHistory(),
   settings: () => bindSettings(),
+  speedtest: () => bindSpeedTest(),
 };
 const _viewRefresh = {
   home: () => {
@@ -206,9 +207,42 @@ const _viewRefresh = {
   },
   devices: () => renderDevicesView(),
   history: () => renderHistory(),
-  settings: () => {},
+  // Instant Shell: re-populate control VALUES on every open (listeners are
+  // bound once in bindSettings). This closes the old hole where a pane
+  // prewarmed before state:get landed kept showing template defaults.
+  settings: () => syncSettingsControls(),
+  speedtest: () => {},
 };
 let _prewarmScheduled = false;
+// Instant Shell prewarm — mount every remaining view one frame apart,
+// starting the frame after the first view paints. Deterministic (idle
+// callbacks can be starved for seconds on a cold-boot machine, which is
+// exactly when the user starts clicking) yet budgeted: one binder per
+// frame keeps input responsive on the weakest CPUs. Settings and History
+// go first — the heaviest panes and the ones users open first. The 1.2s
+// timer backstop covers backgrounded windows where rAF is paused.
+function _scheduleInstantShellPrewarm() {
+  const order = ["settings", "history", "devices", "speedtest"];
+  let i = 0;
+  const step = () => {
+    if (i >= order.length) return;
+    const v = order[i++];
+    try {
+      _mountView(v);
+    } catch (err) {
+      console.error("[lanbeam] prewarm failed:", v, err);
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+  setTimeout(() => {
+    for (const v of order) {
+      try {
+        _mountView(v);
+      } catch {}
+    }
+  }, 1200);
+}
 function _mountView(view) {
   let pane = _panes[view];
   if (pane && pane.isConnected) return { pane, fresh: false };
@@ -259,17 +293,7 @@ function renderView(view) {
   );
   if (!_prewarmScheduled) {
     _prewarmScheduled = true;
-    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 150));
-    idle(() => {
-      for (const v of ["devices", "history", "settings"]) {
-        if (v === "settings" && !state.settings) continue; // binds from loaded settings
-        try {
-          _mountView(v);
-        } catch (err) {
-          console.error("[lanbeam] prewarm failed:", v, err);
-        }
-      }
-    });
+    _scheduleInstantShellPrewarm();
   }
 }
 
@@ -283,7 +307,15 @@ function bindHome() {
   if (dz && input) {
     dz.addEventListener("click", () => input.click());
     input.addEventListener("change", () => {
-      if (input.files?.length) onFilesPicked(Array.from(input.files));
+      // Snapshot the File objects FIRST, then clear the value. Without the
+      // clear, re-picking the SAME file in a later round leaves the input's
+      // value unchanged — Chromium never fires `change`, and the send dies
+      // before it starts, with no error anywhere. (The "re-send the same
+      // file fails silently" bug.) File objects — and Electron's File.path —
+      // stay fully valid after the reset.
+      const picked = Array.from(input.files || []);
+      input.value = "";
+      if (picked.length) onFilesPicked(picked);
     });
     ["dragenter", "dragover"].forEach((ev) =>
       dz.addEventListener(ev, (e) => {
@@ -316,6 +348,9 @@ function renderQr() {
   if (img && state.qr) img.src = state.qr.png;
   const urlInput = document.getElementById("qr-url-text");
   if (urlInput && state.qr) urlInput.value = state.qr.url;
+  // The magnifier cursor is regenerated per-render so a freshly mounted home
+  // pane always carries the current theme tint (see applyQrCursor).
+  applyQrCursor();
   const copyBtn = document.getElementById("qr-copy-btn");
   if (copyBtn && state.qr) {
     copyBtn.onclick = () => {
@@ -428,46 +463,97 @@ function closeQrLightbox(immediate = false) {
   _qrLightboxPrevFocus = null;
 }
 
+const FONT_VARS = {
+  figtree: "var(--font-figtree)",
+  outfit: "var(--font-outfit)",
+  system: "var(--font-system)",
+};
+// Instant Shell theme cache — read by the anti-FOUC <head> script BEFORE
+// first paint and reconciled against the real settings once state:get
+// lands. Persisted on every applyAccent/applyFont so the app never boots
+// in the wrong theme, no matter how slow the disk is.
+function readCachedTheme() {
+  try {
+    return JSON.parse(localStorage.getItem("lanbeam:theme") || "null");
+  } catch {
+    return null;
+  }
+}
+function writeCachedTheme(patch) {
+  try {
+    const t = { ...readCachedTheme(), ...patch };
+    localStorage.setItem("lanbeam:theme", JSON.stringify(t));
+  } catch {}
+}
+// Pure variable setter — no IPC, no swatches, no cursor rebuild. Shared by
+// the boot-time cache paint (must be side-effect free) and applyAccent.
+function applyThemeVars(color, fontChoice) {
+  const rs = document.documentElement.style;
+  rs.setProperty("--accent-color", color);
+  const rgb = hexToRgb(color);
+  if (rgb) {
+    rs.setProperty("--accent-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
+    rs.setProperty(
+      "--accent-soft",
+      `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`,
+    );
+    rs.setProperty(
+      "--accent-very-soft",
+      `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.06)`,
+    );
+  }
+  if (fontChoice) {
+    rs.setProperty("--font-sans", FONT_VARS[fontChoice] || FONT_VARS.figtree);
+  }
+}
 function applyFont(choice) {
-  const fontMap = {
-    figtree: "var(--font-figtree)",
-    outfit: "var(--font-outfit)",
-    system: "var(--font-system)",
-  };
-  const fontVal = fontMap[choice] || fontMap.figtree;
+  const fontVal = FONT_VARS[choice] || FONT_VARS.figtree;
   document.documentElement.style.setProperty("--font-sans", fontVal);
+  writeCachedTheme({ fc: choice });
   if (state.settings) {
     state.settings.fontChoice = choice;
     window.lanbeam?.settings?.update?.({ fontChoice: choice });
   }
 }
 
+// Single source of truth for presence: the main process owns `online`
+// (open presence stream / in-flight transfer request), so cards flip in
+// milliseconds. Falls back to lastSeen only for payloads without the flag.
+function isOnline(d) {
+  if (!d) return false;
+  if (typeof d.online === "boolean") return d.online;
+  return Date.now() - (d.lastSeen || 0) < 30 * 1000;
+}
+
+// One physical device = one card. Prefer the online record, then newest.
+function dedupeDevices(list) {
+  const best = new Map();
+  for (const d of list) {
+    const key = d.deviceId
+      ? (d.ip ? `${d.kind}::${d.name}::${d.ip}` : `id::${d.deviceId}`)
+      : `n::${d.name}`;
+    const cur = best.get(key);
+    if (
+      !cur ||
+      (isOnline(d) && !isOnline(cur)) ||
+      (isOnline(d) === isOnline(cur) && (d.lastSeen || 0) > (cur.lastSeen || 0))
+    ) best.set(key, d);
+  }
+  return [...best.values()];
+}
+
 function renderDevices() {
   const host = document.getElementById("device-cards");
   if (!host) return;
-  const ONLINE_MS = 30 * 1000; // 30s = online
-  const now = Date.now();
-
   const activeTransferPeer = state.currentTransferId
     ? (state.currentTransfer?.peerName ?? null)
     : null;
 
-  const rawActive = state.pairedDevices
-    .filter((d) => {
-      if (now - d.lastSeen < ONLINE_MS) return true;
-      if (activeTransferPeer && d.name === activeTransferPeer) return true;
-      return false;
-    })
-    .sort((a, b) => b.lastSeen - a.lastSeen);
-
-  // Deduplicate by name and IP to ensure only 1 card per physical device
-  const seenKeys = new Set();
-  const activeDevices = rawActive.filter((d) => {
-    const key = (d.name || "") + "::" + (d.ip || d.deviceId);
-    if (seenKeys.has(key)) return false;
-    seenKeys.add(key);
-    return true;
-  });
+  const activeDevices = dedupeDevices(
+    state.pairedDevices.filter(
+      (d) => isOnline(d) || (activeTransferPeer && d.name === activeTransferPeer),
+    ),
+  ).sort((x, y) => (y.lastSeen || 0) - (x.lastSeen || 0));
   if (!activeDevices.length) {
     host.innerHTML = `<div class="empty-hint">No active devices online. Just quickly scan QR CODE and connect your device (Make sure it's on the same network).</div>`;
   } else {
@@ -524,62 +610,84 @@ async function onFilesPicked(files, targetDevice) {
   const ONLINE_MS = 30 * 1000;
   const now = Date.now();
   let peer = targetDevice;
-  if (!peer) {
-    const onlinePeers = state.pairedDevices.filter(
-      (d) => now - d.lastSeen < ONLINE_MS,
-    );
-    if (!onlinePeers.length) {
-      showModalAlert({
-        title: "No device connected",
-        message:
-          "No connected devices are online right now. Please scan the QR code with your phone first.",
-        kind: "warn",
-        confirmText: "Got it",
-      });
-      return;
+  try {
+    if (!peer) {
+      const onlinePeers = dedupeDevices(state.pairedDevices.filter(isOnline));
+      if (!onlinePeers.length) {
+        showModalAlert({
+          title: "No device connected",
+          message:
+            "No connected devices are online right now. Please scan the QR code with your phone first.",
+          kind: "warn",
+          confirmText: "Got it",
+        });
+        return;
+      }
+      // Mesh choice: ONE device online → send immediately (zero extra clicks).
+      // 2+ online → a small picker asks which one. Esc / backdrop cancels.
+      if (onlinePeers.length === 1) {
+        peer = onlinePeers[0];
+      } else {
+        peer = await chooseDevicePopover(onlinePeers);
+        if (!peer) return; // cancelled — files stay untouched
+      }
     }
-    // Mesh choice: ONE device online → send immediately (zero extra clicks).
-    // 2+ online → a small picker asks which one. Esc / backdrop cancels.
-    if (onlinePeers.length === 1) {
-      peer = onlinePeers[0];
-    } else {
-      peer = await chooseDevicePopover(onlinePeers);
-      if (!peer) return; // cancelled — files stay untouched
-    }
-  }
 
-  // Send all selected files sequentially / queue
-  for (const file of files) {
-    const fp = file.path || file.name;
-    const name =
-      file.name || (typeof fp === "string" ? fp.split(/[\\/]/).pop() : "file");
-    // Optimistic UI: show the transfer card instantly, before IPC returns.
-    updateTransferCard(
-      {
-        fileName: name,
-        totalBytes: file.size || 0,
-        bytesTransferred: 0,
-        peerName: peer.name,
-        throughputMbps: 0,
-        etaMs: 0,
-        sparkline: [],
-      },
-      "out",
-    );
-    try {
-      await window.lanbeam.transfer.send({
-        filePath: fp,
-        fileName: name,
-        peerHost: peer.ip || peer.host || "127.0.0.1",
-        peerPort: peer.port || 0,
-        transport: "http",
-        peerName: peer.name,
-        targetDeviceId: peer.deviceId,
-      });
-    } catch (err) {
-      console.error("Failed to send file:", name, err);
-      failTransferCard(err && err.message ? err.message : "send failed");
+    // Send all selected files sequentially / queue
+    for (const file of files) {
+      const fp = file.path || file.name;
+      const name =
+        file.name || (typeof fp === "string" ? fp.split(/[\\/]/).pop() : "file");
+      if (!fp) {
+        // A File with no local path can never be read from disk. Fail THIS
+        // file loudly and keep the rest of the batch moving — a bad entry
+        // must not silently kill the whole send.
+        failTransferCard(`Cannot read “${name}” — the file has no local path`);
+        continue;
+      }
+      // Optimistic UI: show the transfer card instantly, before IPC returns.
+      updateTransferCard(
+        {
+          fileName: name,
+          totalBytes: file.size || 0,
+          bytesTransferred: 0,
+          peerName: peer.name,
+          throughputMbps: 0,
+          etaMs: 0,
+          sparkline: [],
+        },
+        "out",
+      );
+      try {
+        await window.lanbeam.transfer.send({
+          filePath: fp,
+          fileName: name,
+          peerHost: peer.ip || peer.host || "127.0.0.1",
+          peerPort: peer.port || 0,
+          transport: "http",
+          peerName: peer.name,
+          targetDeviceId: peer.deviceId,
+        });
+      } catch (err) {
+        console.error("Failed to send file:", name, err);
+        failTransferCard(err && err.message ? err.message : "send failed");
+      }
     }
+  } catch (err) {
+    // The send TRIGGER itself broke (device picker, card DOM, IPC wiring).
+    // This is exactly the "fails silently, no clue why" class of bug — the
+    // flow must never die without telling the user what happened.
+    console.error("Send flow failed:", err);
+    try {
+      showModalAlert({
+        title: "Could not start the send",
+        message:
+          (err && err.message) ||
+          "Something went wrong while preparing the transfer. Try again — if it keeps happening, restart the app.",
+        kind: "error",
+        confirmText: "OK",
+      });
+    } catch {}
   }
 }
 
@@ -796,7 +904,7 @@ function copyBtnHtml(text, title) {
 function showDeviceModal(deviceId) {
   const d = state.pairedDevices.find((x) => x.deviceId === deviceId);
   if (!d) return;
-  const online = Date.now() - d.lastSeen < 30 * 1000;
+  const online = isOnline(d);
   const overlay = _ensureDeviceModal();
 
   const kindIcon =
@@ -1007,6 +1115,51 @@ function toast(msg) {
 }
 
 // ---------------------------------------------------------------------------
+// Speed Test view — engine self-test through the real local server, plus a
+// pointer to the phone card for the over-the-air measurement. Results are
+// rendered as big numbers with a plain-language verdict; failures show the
+// reason (never silent).
+// ---------------------------------------------------------------------------
+function bindSpeedTest() {
+  const runBtn = document.getElementById("st-run");
+  const out = document.getElementById("st-results");
+  if (!runBtn || !out) return;
+  if (runBtn.dataset.stBound) return;
+  runBtn.dataset.stBound = "1";
+  runBtn.addEventListener("click", async () => {
+    runBtn.disabled = true;
+    runBtn.textContent = "Testing…";
+    out.innerHTML =
+      '<div class="bench-row">Running — 32MB single stream, then 6 parallel lanes…</div>';
+    try {
+      const r = await window.lanbeam.speedtest.run();
+      const boost = r.single.mbps > 0 ? r.lanes.mbps / r.single.mbps : 0;
+      let verdict;
+      if (r.single.mbps >= 2000) {
+        verdict = "Engine is more than fast enough for any 1GbE/Wi-Fi link — the network, not the PC, is the limit.";
+      } else if (boost >= 1.4) {
+        verdict = `Parallel lanes lift this PC's sends by about ×${boost.toFixed(1)} — and large PC→phone sends already use them (up to 12 lanes on the phone, across two addresses of this PC).`;
+      } else {
+        verdict = "Single stream already saturates the engine here; gains would have to come from the network side.";
+      }
+      out.innerHTML = `
+        <div class="st-hero">
+          <div class="st-hero-num"><b>${r.single.mbps}</b><span>Mbps · single stream</span></div>
+          <div class="st-hero-num"><b>${r.lanes.mbps}</b><span>Mbps · ${r.lanes.count} lanes</span></div>
+          <div class="st-hero-num"><b>×${boost.toFixed(1)}</b><span>multi-lane boost</span></div>
+        </div>
+        <div class="bench-row">${escapeHtml(verdict)}</div>
+        <div class="bench-row" style="opacity:.6">${r.single.bytes} bytes verified per phase · ${r.single.ms}ms / ${r.lanes.ms}ms</div>`;
+    } catch (err) {
+      out.innerHTML = `<div class="bench-row">Speed test failed — ${escapeHtml(err && err.message ? err.message : String(err))}. Is the local server running?</div>`;
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run engine test";
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Devices view
 // ---------------------------------------------------------------------------
 function bindDevices() {
@@ -1042,12 +1195,26 @@ function bindDevices() {
 function renderDevicesView() {
   const host = document.getElementById("device-cards-page");
   const peerHost = document.getElementById("peer-cards-page");
+  // Instant Shell: signature cache — skip the full innerHTML rebuild when
+  // nothing identity-relevant changed. The old code re-rendered the whole
+  // page on every open, every 20s tick and every mDNS blip.
+  const sig = [
+    state.pairedDevices
+      .map((d) => `${d.deviceId}:${d.kind}:${d.name}:${d.online ? 1 : 0}:${d.lastSeen || 0}`)
+      .join(","),
+    state.peers.map((p) => `${p.deviceId}:${p.name}:${p.host}:${p.port}`).join(","),
+    state.wifi ? `${state.wifi.linkRateMbps || ""}:${state.wifi.band || ""}` : "",
+  ].join("|");
+  const anyHost = host || peerHost;
+  if (anyHost && anyHost._devSig === sig && host?.childElementCount) return;
+  if (anyHost) anyHost._devSig = sig;
   if (host) {
     if (!state.pairedDevices.length) {
       host.innerHTML = `<div class="empty-hint">No paired devices yet.</div>`;
     } else {
-      host.innerHTML = state.pairedDevices
-        .map((d) => deviceCardHtml(d, Date.now() - d.lastSeen < 5 * 60 * 1000))
+      host.innerHTML = dedupeDevices(state.pairedDevices)
+        .sort((x, y) => Number(isOnline(y)) - Number(isOnline(x)) || (y.lastSeen || 0) - (x.lastSeen || 0))
+        .map((d) => deviceCardHtml(d, isOnline(d)))
         .join("");
     }
   }
@@ -1103,7 +1270,11 @@ function historyRowHtml(h) {
   const completedAt = h.completedAt
     ? _histDate.format(new Date(h.completedAt))
     : "—";
-  const integrityOk = h.integrityOk === true;
+  const status = h.status || (h.integrityOk ? "complete" : "failed");
+  const isCancelled = status === "cancelled";
+  const isFailed = status === "failed" || (!h.integrityOk && !isCancelled);
+  const statusLabel = isCancelled ? "✕ Cancelled" : isFailed ? "✗ Failed" : "✓ Verified";
+  const statusClass = isCancelled ? "h-integrity-warn" : isFailed ? "h-integrity-bad" : "h-integrity-ok";
   const direction = h.direction === "out" ? "out" : "in";
   const peerName = h.peerName || "Unknown device";
   const html = `
@@ -1112,8 +1283,8 @@ function historyRowHtml(h) {
           <span class="h-name-text">${escapeHtml(h.fileName)}</span>
           <span class="h-name-sub">· ${directionLabel(direction)} · ${escapeHtml(peerName)}</span>
         </div>
-        <div class="h-speed">${avg.value} ${avg.unit}</div>
-        <div class="${integrityOk ? "h-integrity-ok" : "h-integrity-bad"}">${integrityOk ? "✓ Verified" : "✗ Failed"}</div>
+        <div class="h-speed">${isCancelled || isFailed ? "—" : `${avg.value} ${avg.unit}`}</div>
+        <div class="${statusClass}">${statusLabel}</div>
         <div class="h-time">${completedAt}</div>
         <div class="h-actions">
           <button class="h-action-btn" data-history-action="open" title="Open file" aria-label="Open file">${_OPEN_ICON}</button>
@@ -1218,14 +1389,19 @@ function renderHistory() {
 // ---------------------------------------------------------------------------
 // Settings view
 // ---------------------------------------------------------------------------
-function bindSettings() {
+// Instant Shell: populate Settings control VALUES from state.settings.
+// Split from the one-time listener binding (bindSettings) so a prewarmed
+// pane syncs its values on every open via _viewRefresh.settings — even
+// when it was mounted before the first state:get landed.
+function syncSettingsControls() {
+  if (!state.settings) return;
   const chunk = document.getElementById("setting-chunk");
   const chunkVal = document.getElementById("setting-chunk-val");
   const streams = document.getElementById("setting-streams");
   const streamsVal = document.getElementById("setting-streams-val");
   const warn = document.getElementById("setting-warn");
   const historyToggle = document.getElementById("setting-history");
-  if (state.settings) {
+  {
     if (chunk) chunk.value = String(state.settings.chunkSizeMB);
     if (chunkVal) chunkVal.textContent = String(state.settings.chunkSizeMB);
     if (streams) streams.value = String(state.settings.maxParallelStreams);
@@ -1311,6 +1487,31 @@ function bindSettings() {
       }
     }
   }
+  // Swatch highlight follows the live accent — lives here (not in the
+  // one-time binder) so opening the pane after a theme change marks the
+  // right swatch without a remount.
+  document
+    .querySelectorAll("#settings-swatches .swatch")
+    .forEach((sw) => {
+      if (
+        state.settings?.accentColor &&
+        sw.dataset.color === state.settings.accentColor
+      ) {
+        sw.classList.add("active");
+      } else {
+        sw.classList.remove("active");
+      }
+    });
+}
+
+function bindSettings() {
+  const chunk = document.getElementById("setting-chunk");
+  const chunkVal = document.getElementById("setting-chunk-val");
+  const streams = document.getElementById("setting-streams");
+  const streamsVal = document.getElementById("setting-streams-val");
+  const warn = document.getElementById("setting-warn");
+  const historyToggle = document.getElementById("setting-history");
+  syncSettingsControls();
   chunk?.addEventListener("input", () => {
     if (chunkVal) chunkVal.textContent = chunk.value;
     window.lanbeam.settings.update({ chunkSizeMB: parseInt(chunk.value, 10) });
@@ -1378,7 +1579,8 @@ function bindSettings() {
     updateHistoryNav(show);
   });
 
-  // Settings swatches sync
+  // Settings swatches: click listeners only (the active highlight is
+  // synced by syncSettingsControls on every open).
   const settingsSwatches = document.querySelectorAll(
     "#settings-swatches .swatch",
   );
@@ -1386,14 +1588,6 @@ function bindSettings() {
     sw.addEventListener("click", () =>
       applyAccent(sw.dataset.color || "#00E5FF", settingsSwatches),
     );
-    if (
-      state.settings?.accentColor &&
-      sw.dataset.color === state.settings.accentColor
-    ) {
-      sw.classList.add("active");
-    } else {
-      sw.classList.remove("active");
-    }
   });
 
   // Benchmark
@@ -1431,29 +1625,48 @@ function renderBenchResults(results) {
 }
 
 function applyAccent(color, swatchEls) {
-  document.documentElement.style.setProperty("--accent-color", color);
   // Recompute soft variants from the hex. Every glow/badge/status in the app
   // derives from --accent-rgb, so switching theme re-tints the WHOLE palette
   // (no leftover cyan/green glows from the old hardcoded shadows).
+  applyThemeVars(color, state.settings?.fontChoice);
+  // Cache the precomputed rgb string too — the <head> anti-FOUC script is
+  // kept dependency-free and just sets the vars it finds.
   const rgb = hexToRgb(color);
-  if (rgb) {
-    document.documentElement.style.setProperty(
-      "--accent-rgb",
-      `${rgb.r}, ${rgb.g}, ${rgb.b}`,
-    );
-    document.documentElement.style.setProperty(
-      "--accent-soft",
-      `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`,
-    );
-    document.documentElement.style.setProperty(
-      "--accent-very-soft",
-      `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.06)`,
-    );
-  }
-  swatchEls.forEach((sw) =>
+  writeCachedTheme({
+    a: color,
+    r: rgb ? `${rgb.r}, ${rgb.g}, ${rgb.b}` : null,
+  });
+  (swatchEls || []).forEach((sw) =>
     sw.classList.toggle("active", sw.dataset.color === color),
   );
   window.lanbeam?.settings?.update?.({ accentColor: color });
+  // The QR magnifier cursor is a data-URI SVG — CSS data URIs cannot read
+  // var(--accent-color), so it is rebuilt here on every accent change.
+  applyQrCursor();
+}
+
+// Brand-tinted magnifier cursor for the QR card. The stylesheet ships a
+// hardcoded-cyan fallback; this rewrites it as an INLINE style using the
+// live --accent-color, so the glass follows the user's theme instead of
+// staying boot-time blue forever. Purely cosmetic — zero behaviour change.
+function applyQrCursor() {
+  const frames = document.querySelectorAll(".qr-frame");
+  if (!frames.length) return;
+  let accent = "";
+  try {
+    accent = (getComputedStyle(document.documentElement).getPropertyValue("--accent-color") || "").trim();
+  } catch {}
+  if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(accent)) accent = "#00E5FF";
+  const rgb = hexToRgb(accent) || { r: 0, g: 229, b: 255 };
+  const svg =
+    `<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 26 26'>` +
+    `<circle cx='11' cy='11' r='6.5' fill='rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.08)' stroke='${accent}' stroke-width='1.8'/>` +
+    `<line x1='15.8' y1='15.8' x2='21.5' y2='21.5' stroke='${accent}' stroke-width='1.8' stroke-linecap='round'/>` +
+    `</svg>`;
+  const cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 11 11, zoom-in`;
+  frames.forEach((f) => {
+    f.style.cursor = cursor;
+  });
 }
 
 function hexToRgb(hex) {
@@ -1541,6 +1754,8 @@ const TOAST_ICON_OPEN =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
 const TOAST_ICON_FOLDER =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+const TOAST_ICON_HISTORY =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
 const TOAST_ICON_CLOSE =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 
@@ -1565,6 +1780,15 @@ function showCompletionToast(r) {
   const sizeStr = formatBytes(r.fileSize || r.bytesTransferred || 0);
   const speedStr = formatSpeed(throughput);
   const dirStr = direction === "in" ? "Received from" : "Sent to";
+  // Outgoing (PC→phone): the file already lives on this PC — "Open" / "Folder"
+  // are pointless for the user who just picked it. The only useful action is
+  // reviewing the record, so the card gets a single "Go to History" button.
+  // Incoming keeps Open / Folder — the file is genuinely new to this machine.
+  const isOut = direction === "out";
+  const actionsHtml = isOut
+    ? `<button class="toast-action-btn toast-action-btn-primary" data-toast-action="history" title="Go to History">${TOAST_ICON_HISTORY}<span>Go to History</span></button>`
+    : `<button class="toast-action-btn toast-action-btn-primary" data-toast-action="open" title="Open file">${TOAST_ICON_OPEN}<span>Open</span></button>
+      <button class="toast-action-btn" data-toast-action="folder" title="Show in folder">${TOAST_ICON_FOLDER}<span>Folder</span></button>`;
 
   const stack = _ensureToastsStack();
   const card = document.createElement("div");
@@ -1589,14 +1813,7 @@ function showCompletionToast(r) {
       <button class="toast-close-btn" data-toast-action="close" title="Dismiss" aria-label="Dismiss">${TOAST_ICON_CLOSE}</button>
     </div>
     <div class="toast-card-actions">
-      <button class="toast-action-btn toast-action-btn-primary" data-toast-action="open" title="Open file">
-        ${TOAST_ICON_OPEN}
-        <span>Open</span>
-      </button>
-      <button class="toast-action-btn" data-toast-action="folder" title="Show in folder">
-        ${TOAST_ICON_FOLDER}
-        <span>Folder</span>
-      </button>
+      ${actionsHtml}
     </div>
     <div class="toast-progress-track"><div class="toast-progress-fill"></div></div>
   `;
@@ -1734,6 +1951,13 @@ function showCompletionToast(r) {
   openBtn?.addEventListener("click", onOpen);
   folderBtn?.addEventListener("click", onFolder);
   closeBtn?.addEventListener("click", () => dismiss());
+  // Sent-to-phone cards: jump straight to the History view.
+  card
+    .querySelector('[data-toast-action="history"]')
+    ?.addEventListener("click", () => {
+      dismiss();
+      renderView("history");
+    });
 
   // Hover pauses the countdown; mouse-leave resumes.
   card.addEventListener("mouseenter", pauseCountdown);
@@ -1945,7 +2169,10 @@ function updateTransferCard(p, direction = "in") {
       ? `${Math.min(100, pct).toFixed(0)}% · ${formatBytes(p.bytesTransferred)} / ${formatBytes(p.totalBytes)} · Paused — waiting for the phone to reconnect`
       : `${Math.min(100, pct).toFixed(0)}% · ${formatBytes(p.bytesTransferred)} / ${formatBytes(p.totalBytes)} · ETA ${formatEta(p.etaMs)}`;
   if (stats && !(p.bytesTransferred > 0))
-    stats.textContent = "Preparing · waiting for first data…";
+    stats.textContent =
+      direction === "out"
+        ? "Staged · waiting for the phone to pick up…"
+        : "Preparing · waiting for first data…";
   const speedVal = document.getElementById("speed-value");
   const speedUnit = document.querySelector(".speed-unit");
   const { value, unit } = formatSpeed(p.throughputMbps);
@@ -2006,7 +2233,9 @@ function updateFloatCard(p, direction) {
     ? `${pct.toFixed(0)}% \u00b7 Paused \u2014 waiting for phone`
     : p.bytesTransferred > 0
       ? `${pct.toFixed(0)}% \u00b7 ${sp.value} ${sp.unit} \u00b7 ETA ${formatEta(p.etaMs)}`
-      : "Preparing \u00b7 waiting for first data\u2026";
+      : direction === "out"
+        ? "Staged \u00b7 waiting for phone\u2026"
+        : "Preparing \u00b7 waiting for first data\u2026";
   _floatShow(true);
 }
 function endFloatCard(text, hideMs, full) {
@@ -2091,6 +2320,14 @@ function failTransferCard(error) {
     false,
   );
   state.currentTransferId = null;
+  // Trigger history refresh from main process store
+  window.lanbeam.state.get().then((st) => {
+    if (st && st.history) {
+      state.history = st.history;
+      state.historyRev = (state.historyRev || 0) + 1;
+      if (state.view === "history") renderHistory();
+    }
+  }).catch(() => {});
   const section = document.getElementById("transfer-section");
   if (!section) return;
   const stats = document.getElementById("progress-stats");
@@ -2187,10 +2424,19 @@ function bindWindowControls() {
 // ---------------------------------------------------------------------------
 function bindNav() {
   document.querySelectorAll(".nav-item").forEach((el) => {
-    el.addEventListener("click", () => {
-      const v = el.getAttribute("data-view");
-      renderView(v);
-    });
+    const v = el.getAttribute("data-view");
+    // Instant Shell: the moment the pointer heads for a nav button, mount
+    // that view. Human hover-to-click latency (100-300ms) becomes free
+    // build time, so the click itself is a pure display toggle. Idempotent
+    // — _mountView returns the cached pane when it is already built.
+    if (v) {
+      el.addEventListener("pointerenter", () => {
+        try {
+          _mountView(v);
+        } catch {}
+      });
+    }
+    el.addEventListener("click", () => renderView(v));
   });
 }
 
@@ -2200,6 +2446,13 @@ function bindNav() {
 async function boot() {
   bindWindowControls();
   bindNav();
+
+  // Instant Shell: the <head> anti-FOUC script already painted the cached
+  // theme before this file even parsed. Re-assert it here (belt and
+  // suspenders for first run / cleared storage), THEN render home — the
+  // first view paints in the user's theme, never the default cyan.
+  const cachedTheme = readCachedTheme();
+  if (cachedTheme?.a) applyThemeVars(cachedTheme.a, cachedTheme.fc);
 
   // Render home immediately so UI is never blank on launch
   renderView("home");
@@ -2229,10 +2482,9 @@ async function boot() {
   // — pairing succeeded, so send a toast showing connection successful and close the enlarged QR.
   let _prevOnlineIds = null;
   window.lanbeam.devices.onUpdated((devices) => {
-    const now = Date.now();
     const onlineNow = new Set(
       (devices || [])
-        .filter((d) => d && now - (d.lastSeen || 0) < 30 * 1000)
+        .filter((d) => d && isOnline(d))
         .map((d) => d.deviceId),
     );
     const lightboxWasOpen = !!_qrLightbox;
@@ -2303,8 +2555,14 @@ async function boot() {
       if (s.qr) {
         state.qr = s.qr;
       }
-      applyAccent(s.settings?.accentColor || "#00E5FF", []);
-      applyFont(s.settings?.fontChoice || "figtree");
+      // Reconcile the REAL theme against the cached one painted at t=0.
+      // Only re-apply when it actually differs — no flash, no redundant
+      // style recalc, no duplicate settings writes on a healthy boot.
+      const realAccent = s.settings?.accentColor || "#00E5FF";
+      if (realAccent !== (cachedTheme?.a || "#00E5FF"))
+        applyAccent(realAccent, []);
+      const realFont = s.settings?.fontChoice || "figtree";
+      if (realFont !== (cachedTheme?.fc || "figtree")) applyFont(realFont);
       const initialShowHistory =
         typeof s.settings?.showHistory === "boolean"
           ? s.settings.showHistory
@@ -2320,11 +2578,28 @@ async function boot() {
     console.error("Failed to get initial state:", err);
   }
 
-  // Re-render device cards every 20s so online/offline status updates automatically.
+  // Re-render device cards every 20s so online/offline status updates
+  // automatically. Skipped while the window is hidden in the tray — zero
+  // background CPU when nobody is looking at the app.
   setInterval(() => {
+    if (document.hidden) return;
     if (state.view === "home") renderDevices();
     if (state.view === "devices") renderDevicesView();
   }, 20000);
+  // Reconcile with the main process on focus/visibility so the UI can never
+  // stay stale after the window was hidden or throttled.
+  const resync = async () => {
+    try {
+      const st = await window.lanbeam.state.get();
+      if (st?.pairedDevices) {
+        state.pairedDevices = st.pairedDevices;
+        if (state.view === "home") renderDevices();
+        if (state.view === "devices") renderDevicesView();
+      }
+    } catch {}
+  };
+  window.addEventListener("focus", resync);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) resync(); });
 
   // Real radio info for device cards + the device popup (generation/band/rate).
   const refreshWifi = async () => {
@@ -2341,7 +2616,9 @@ async function boot() {
     } catch {}
   };
   refreshWifi();
-  setInterval(refreshWifi, 30000);
+  setInterval(() => {
+    if (!document.hidden) refreshWifi();
+  }, 30000);
 }
 
 boot().catch((err) => console.error("renderer boot failed:", err));

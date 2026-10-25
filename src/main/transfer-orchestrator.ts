@@ -489,6 +489,7 @@ export class TransferOrchestrator extends EventEmitter {
       filePath: transfer.filePath,
       startedAt: transfer.startedAt,
       completedAt,
+      status: integrityOk ? 'complete' : 'failed',
     };
     this.store.addHistory({
       id: transferId,
@@ -503,6 +504,7 @@ export class TransferOrchestrator extends EventEmitter {
       averageThroughputMbps: avgThroughput,
       integrityOk,
       chunkRetries: 0,
+      status: integrityOk ? 'complete' : 'failed',
     });
     this.outFinished.set(transferId, { state: 'complete', at: completedAt });
     // Final 100% event then completion. NOTE: the entry intentionally stays
@@ -616,6 +618,7 @@ export class TransferOrchestrator extends EventEmitter {
       averageThroughputMbps: avgThroughput,
       chunkRetries: transfer.failedChunks.length,
       bytesTransferred: transfer.bytesTransferred,
+      status: integrityOk ? 'complete' : 'failed',
       // Populate the full history-entry fields so the renderer can prepend
       // `result` straight into state.history without having to refetch from
       // the store. This is what made history "disappear" after a transfer —
@@ -644,6 +647,7 @@ export class TransferOrchestrator extends EventEmitter {
       averageThroughputMbps: avgThroughput,
       integrityOk,
       chunkRetries: transfer.failedChunks.length,
+      status: integrityOk ? 'complete' : 'failed',
     });
     this.resumeState.delete(transfer.manifest.merkleRoot);
     this.inbound.delete(transferId);
@@ -760,6 +764,21 @@ export class TransferOrchestrator extends EventEmitter {
         try { inb.fileHandle.close(); } catch {}
         inb.fileHandle = null;
       }
+      const durationMs = Date.now() - inb.startedAt;
+      this.store.addHistory({
+        id: transferId,
+        fileName: inb.manifest.fileName,
+        fileSize: inb.manifest.fileSize,
+        direction: 'in',
+        peerName: inb.peerName || this.peerNameForInbound,
+        startedAt: inb.startedAt,
+        completedAt: Date.now(),
+        durationMs,
+        averageThroughputMbps: 0,
+        integrityOk: false,
+        chunkRetries: inb.failedChunks.length,
+        status: 'cancelled',
+      });
       this.inbound.delete(transferId);
       this.resumeState.delete(inb.manifest.merkleRoot);
       // Tell the UI first (instant), then remove the partial file in the background.
@@ -768,6 +787,22 @@ export class TransferOrchestrator extends EventEmitter {
       fs.unlink(path.join(inb.outputDir, inb.manifest.fileName)).catch(() => {});
     }
     if (out) {
+      const durationMs = Date.now() - out.startedAt;
+      this.store.addHistory({
+        id: transferId,
+        fileName: out.manifest.fileName,
+        fileSize: out.manifest.fileSize,
+        direction: 'out',
+        peerName: out.peerName || out.peer.host,
+        filePath: out.filePath,
+        startedAt: out.startedAt,
+        completedAt: Date.now(),
+        durationMs,
+        averageThroughputMbps: 0,
+        integrityOk: false,
+        chunkRetries: 0,
+        status: 'cancelled',
+      });
       this.outbound.delete(transferId);
       try { this.outAborts.get(transferId)?.abort(); } catch {}
       for (const fn of this.outStreams.get(transferId) ?? []) { try { fn(); } catch {} }

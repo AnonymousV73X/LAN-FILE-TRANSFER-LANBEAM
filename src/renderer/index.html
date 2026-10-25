@@ -5,6 +5,42 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LANBeam — Fast. Local. Seamless.</title>
   <link rel="stylesheet" href="styles.css" />
+  <!-- Instant Shell: stream the shell's critical font weights in parallel
+       with CSS/JS parse instead of after first layout needs them. Combined
+       with font-display:swap (styles.css) this removes the invisible-text
+       window on cold-HDD boots. -->
+  <link rel="preload" href="fonts/figtree-400.ttf" as="font" type="font/ttf" crossorigin />
+  <link rel="preload" href="fonts/figtree-500.ttf" as="font" type="font/ttf" crossorigin />
+  <link rel="preload" href="fonts/figtree-600.ttf" as="font" type="font/ttf" crossorigin />
+  <link rel="preload" href="fonts/figtree-700.ttf" as="font" type="font/ttf" crossorigin />
+  <script>
+    /* Instant Shell anti-FOUC — apply the cached theme BEFORE first paint.
+       Written by applyAccent/applyFont (renderer main.js) on every theme
+       change; on first run / cleared storage this is a harmless no-op and
+       the app boots in the default theme as before. Without this, the app
+       painted default cyan and flipped to the user's theme only after the
+       state:get IPC round-trip landed — very visible on slow disks. */
+    (function () {
+      try {
+        var t = JSON.parse(localStorage.getItem("lanbeam:theme") || "null");
+        if (t && t.a) {
+          var rs = document.documentElement.style;
+          rs.setProperty("--accent-color", t.a);
+          if (t.r) {
+            rs.setProperty("--accent-rgb", t.r);
+            rs.setProperty("--accent-soft", "rgba(" + t.r + ", 0.15)");
+            rs.setProperty("--accent-very-soft", "rgba(" + t.r + ", 0.06)");
+          }
+          var FV = {
+            figtree: "var(--font-figtree)",
+            outfit: "var(--font-outfit)",
+            system: "var(--font-system)",
+          };
+          if (t.fc && FV[t.fc]) rs.setProperty("--font-sans", FV[t.fc]);
+        }
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <div class="window">
@@ -49,6 +85,12 @@
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
               <polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </button>
+          <button class="nav-item" data-view="speedtest" aria-label="Speed Test">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18.54 19.79a9.25 9.25 0 1 0-13.08 0"></path>
+              <path d="m12 13.25 4-4"></path>
             </svg>
           </button>
           <button class="nav-item" data-view="settings" aria-label="Settings">
@@ -136,7 +178,6 @@
             <div class="progress-fill" id="progress-fill" style="width:0%"></div>
           </div>
           <div class="progress-stats" id="progress-stats">0% · 0 / 0 · ETA —</div>
-          <button type="button" class="ghost-btn" id="transfer-cancel" style="margin-top:8px">Cancel transfer</button>
         </div>
         <div class="transfer-speed">
           <div class="speed-readout">
@@ -145,6 +186,15 @@
           </div>
           <div class="speed-label">Current speed</div>
           <svg class="speed-sparkline" id="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
+        </div>
+        <!-- Cancel sits JUST BELOW THE FILE NAME on wide screens (first
+             grid column, second row — next to the transfer it aborts, not
+             at the far end of the card). On narrow layouts CSS demotes it
+             to a full-width bottom row, after the realtime speed banner.
+             It used to live inside the progress block, which left it
+             floating mid-card on phones. -->
+        <div class="transfer-actions">
+          <button type="button" class="ghost-btn" id="transfer-cancel">Cancel transfer</button>
         </div>
       </div>
     </section>
@@ -178,6 +228,21 @@
     </section>
   </template>
 
+  <template id="view-speedtest">
+    <section class="page">
+      <h2 class="page-title">Speed Test</h2>
+      <p class="page-sub">Measure the transfer engine and your real Wi-Fi link.</p>
+
+      <h3 class="page-subtitle">Transfer engine (this PC)</h3>
+      <p class="st-note">Pushes 32MB of incompressible data through the real LAN server stack — first as a single stream (the small-file path), then as 6 parallel lanes. Large PC→phone sends now use the multi-lane path, so this is the ceiling your PC pushes before Wi-Fi even gets involved.</p>
+      <button class="bench-btn" id="st-run">Run engine test</button>
+      <div class="bench-results" id="st-results"></div>
+
+      <h3 class="page-subtitle">Real Wi-Fi speed (PC → phone)</h3>
+      <p class="st-note">Open LANBeam on your phone on the same Wi-Fi and tap “Speed test” in the footer — the phone measures the true over-the-air receive rate, single stream vs up to 12 parallel lanes across two addresses of this PC: exactly the paths PC→phone sends use (small files stream, files ≥8MB go multi-lane).</p>
+    </section>
+  </template>
+
   <template id="view-settings">
     <section class="page">
       <h2 class="page-title">Settings</h2>
@@ -187,11 +252,13 @@
           <span class="setting-label">Chunk size (MB)</span>
           <input type="range" min="1" max="16" step="1" id="setting-chunk" />
           <span class="setting-value" id="setting-chunk-val">4</span>
+          <span class="setting-hint" style="font-size: 11px; opacity: 0.6; margin-top: 4px;">4 MB is recommended for lowest latency & memory.</span>
         </label>
         <label class="setting">
           <span class="setting-label">Max parallel streams</span>
           <input type="range" min="1" max="32" step="1" id="setting-streams" />
-          <span class="setting-value" id="setting-streams-val">8</span>
+          <span class="setting-value" id="setting-streams-val">4</span>
+          <span class="setting-hint" style="font-size: 11px; opacity: 0.6; margin-top: 4px;">4 streams is the sweet spot for Wi-Fi & hotspot stability.</span>
         </label>
         <div class="setting">
           <span class="setting-label">Compression</span>
