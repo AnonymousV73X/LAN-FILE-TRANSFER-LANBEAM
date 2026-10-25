@@ -94,6 +94,14 @@ export interface OutboundTransfer {
   // Never set for desktop-originated sends — those are the user's own files.
   keepCopy?: boolean;
   stagedBy?: 'desktop' | 'relay';
+  // ---- Verified-receive bookkeeping (PC → phone) -------------------------
+  // Live count of open HTTP response streams for this entry (a download
+  // manager may hold several Range connections at once) and the timestamp of
+  // the last byte actually handed to a socket. Together these let the phone
+  // poll /dlstatus and the desktop card distinguish "offered / active /
+  // interrupted / complete" instead of staring at a frozen 0%.
+  activeStreams?: number;
+  lastServedAt?: number;
 }
 
 export type OrchestratorEvent =
@@ -138,6 +146,22 @@ export class TransferOrchestrator extends EventEmitter {
         if (now - (this.lastActivity.get(id) ?? 0) > 8000) this.emitProgress(id, true);
       }
       for (const [id, f] of this.finished) if (now - f.at > 3600_000) this.finished.delete(id);
+      // Outbound entries: PC→phone sends. Two failure shapes previously sat
+      // SILENT at 0% forever: (a) phone never picked the file up, (b) phone
+      // download interrupted mid-way. Both now surface on the card, and
+      // (a) escalates to a real failure with a reason after 10 minutes.
+      for (const [id, t] of [...this.outbound.entries()]) {
+        if (t.completed) continue;
+        const idle = now - (t.lastServedAt ?? t.startedAt);
+        if ((t.activeStreams ?? 0) === 0 && idle > 8000) this.emitProgress(id, false);
+        if (t.bytesTransferred === 0 && now - t.startedAt > 10 * 60_000) {
+          this.outbound.delete(id);
+          this.outFinished.set(id, { state: 'failed', at: now });
+          log.warn(`[orchestrator] Outbound ${id} never picked up by the phone after 10 min — failing with reason`);
+          this.emit('event', { type: 'outbound:failed', transferId: id, error: 'Phone never picked up the file — was it still connected?' } satisfies OrchestratorEvent);
+        }
+      }
+      for (const [id, f] of this.outFinished) if (now - f.at > 3600_000) this.outFinished.delete(id);
     }, 3000);
     this.stallTimer.unref?.();
   }
@@ -145,6 +169,9 @@ export class TransferOrchestrator extends EventEmitter {
   private outAborts = new Map<string, AbortController>();
   private outStreams = new Map<string, Set<() => void>>();
   private resumeState = new Map<string, Set<number>>(); // manifest.root -> received chunk indices (for resume)
+  // Terminal memory for outbound entries — lets /dlstatus answer 'complete'
+  // briefly after the entry was acked+removed instead of 'gone'.
+  private outFinished = new Map<string, { state: 'complete' | 'failed'; at: number }>();
 
   constructor(private store: StateStore) {
     super();
@@ -268,6 +295,12 @@ export class TransferOrchestrator extends EventEmitter {
       return false;
     }
 
+    // Placeholder manifests (the phone builds instant fnv0 fingerprints —
+    // the real integrity gate is the whole-file re-verify in completeInbound)
+    // skip hashing entirely: computing an unused SHA-256 over every 4MB
+    // chunk burned main-process CPU on the hot upload path.
+    const isFnvPlaceholder = typeof expected.hash === 'string' && (expected.hash.startsWith('fnv0') || (expected.hash.length === 64 && expected.hash.slice(0, 8).repeat(8) === expected.hash));
+
     let buf = data;
     if (compressed) {
       try { buf = await core.decompressChunk(data); } catch (err) {
@@ -276,17 +309,18 @@ export class TransferOrchestrator extends EventEmitter {
       }
     }
 
-    const calculatedHash = core.hashChunk(buf);
-    const isFnvPlaceholder = typeof expected.hash === 'string' && (expected.hash.startsWith('fnv0') || (expected.hash.length === 64 && expected.hash.slice(0, 8).repeat(8) === expected.hash));
-    const ok = isFnvPlaceholder || core.verifyChunk(buf, expected.hash);
+    if (!isFnvPlaceholder) {
+      const calculatedHash = core.hashChunk(buf);
+      const ok = core.verifyChunk(buf, expected.hash);
 
-    if (!ok) {
-      log.warn(`[orchestrator] Hash mismatch for chunk ${chunkIndex}: expected=${expected.hash}, calculated=${calculatedHash}, len=${buf.length}`);
-      transfer.failedChunks.push(chunkIndex);
-      return false;
+      if (!ok) {
+        log.warn(`[orchestrator] Hash mismatch for chunk ${chunkIndex}: expected=${expected.hash}, calculated=${calculatedHash}, len=${buf.length}`);
+        transfer.failedChunks.push(chunkIndex);
+        return false;
+      }
+
+      log.debug(`[orchestrator] Chunk ${chunkIndex} verified successfully (len=${buf.length}, hash=${expected.hash.slice(0, 12)}...)`);
     }
-
-    log.debug(`[orchestrator] Chunk ${chunkIndex} verified successfully (len=${buf.length}, hash=${expected.hash.slice(0, 12)}...)`);
 
     // Write the verified chunk to disk at its correct offset.
     // File is pre-allocated in startInbound so 'r+' always works.
@@ -335,6 +369,7 @@ export class TransferOrchestrator extends EventEmitter {
     const transfer = this.outbound.get(transferId);
     if (!transfer || transfer.completed) return;
     transfer.bytesTransferred += deltaBytes;
+    transfer.lastServedAt = Date.now();
     // Clamp: ranged/retried requests can overcount slightly vs the real size.
     if (transfer.bytesTransferred > transfer.manifest.fileSize) {
       transfer.bytesTransferred = transfer.manifest.fileSize;
@@ -343,6 +378,52 @@ export class TransferOrchestrator extends EventEmitter {
     // Throttle UI events to ~8/s — per-TCP-packet would flood the IPC channel.
     if (now - transfer.lastReportAt >= 120) {
       transfer.lastReportAt = now;
+      this.emitProgress(transferId, false);
+    }
+  }
+
+  /**
+   * Ground truth for a phone pulling a PC-sent file — mirrors
+   * getInboundStatus. The phone's verified download loop renders its card
+   * from THIS, never from local guesses about the OS download manager.
+   */
+  getOutboundStatus(transferId: string): { state: 'offered' | 'active' | 'interrupted' | 'complete' | 'gone'; bytes: number; total: number; idleMs: number } {
+    const out = this.outbound.get(transferId);
+    if (out) {
+      const total = out.manifest.fileSize;
+      const bytes = Math.min(total, out.bytesTransferred);
+      if (out.completed || bytes >= total) return { state: 'complete', bytes, total, idleMs: 0 };
+      const idle = Date.now() - (out.lastServedAt ?? out.startedAt);
+      const streams = out.activeStreams ?? 0;
+      if (streams > 0) return { state: 'active', bytes, total, idleMs: idle };
+      if (idle < 8000) return { state: 'active', bytes, total, idleMs: idle };
+      return { state: bytes > 0 ? 'interrupted' : 'offered', bytes, total, idleMs: idle };
+    }
+    const f = this.outFinished.get(transferId);
+    if (f) return { state: f.state === 'complete' ? 'complete' : 'gone', bytes: 0, total: 0, idleMs: Date.now() - f.at };
+    return { state: 'gone', bytes: 0, total: 0, idleMs: 0 };
+  }
+
+  /** An HTTP response stream for this outbound entry just opened. */
+  noteOutboundStreamOpen(transferId: string): void {
+    const t = this.outbound.get(transferId);
+    if (!t) return;
+    t.activeStreams = (t.activeStreams ?? 0) + 1;
+    t.lastServedAt = Date.now();
+    this.emitProgress(transferId, false);
+  }
+
+  /** An HTTP response stream closed (finished OR died mid-transfer). */
+  noteOutboundStreamClose(transferId: string): void {
+    const t = this.outbound.get(transferId);
+    if (!t) return;
+    t.activeStreams = Math.max(0, (t.activeStreams ?? 1) - 1);
+    if (!t.completed && t.bytesTransferred < t.manifest.fileSize && (t.activeStreams ?? 0) === 0) {
+      // Partial hand-over and no live connection: the phone's download died
+      // (screen lock, tab freeze, Wi-Fi blip). Emit a stalled progress event
+      // so the DESKTOP card explains itself instead of showing a live 0-speed
+      // bar. The entry stays so the phone can resume via Range requests.
+      log.info(`[orchestrator] Outbound ${transferId} interrupted at ${t.bytesTransferred}/${t.manifest.fileSize} bytes — waiting for the phone to resume`);
       this.emitProgress(transferId, false);
     }
   }
@@ -416,6 +497,7 @@ export class TransferOrchestrator extends EventEmitter {
       integrityOk,
       chunkRetries: 0,
     });
+    this.outFinished.set(transferId, { state: 'complete', at: completedAt });
     // Final 100% event then completion. NOTE: the entry intentionally stays
     // in the outbound map — the phone still needs the manifest/file until it
     // POSTs /ack (and download managers may resume with Range requests).
@@ -466,9 +548,18 @@ export class TransferOrchestrator extends EventEmitter {
     const remainingBytes = Math.max(0, totalBytes - bytesTransferred);
     const etaMs = currentSpeedMbps > 0 ? (remainingBytes * 8) / 1_000_000 / currentSpeedMbps * 1000 : 0;
 
-    const stalled = inbound && now - (this.lastActivity.get(transferId) ?? now) > 8000;
-    const progress: TransferProgress & { stalled?: boolean } = {
+    // Outbound-only fields (completed / activeStreams / lastServedAt) live on
+    // OutboundTransfer — narrow the union so TS can see them.
+    const outT = !inbound ? (transfer as OutboundTransfer) : null;
+    const stalled = inbound
+      ? now - (this.lastActivity.get(transferId) ?? now) > 8000
+      : (outT !== null && !outT.completed && outT.bytesTransferred > 0 && (outT.activeStreams ?? 0) === 0 && now - (outT.lastServedAt ?? outT.startedAt) > 8000);
+    const progress: TransferProgress & { stalled?: boolean; waiting?: boolean } = {
       stalled,
+      // Outbound with zero bytes handed over = staged but the phone hasn't
+      // picked it up yet. Distinct from stalled so the card can say
+      // "waiting for the phone" instead of implying a mid-transfer pause.
+      waiting: outT !== null && outT.bytesTransferred === 0,
       fileId: transferId,
       fileName: transfer.manifest.fileName,
       peerName: transfer.peerName || this.peerNameForInbound,
@@ -670,6 +761,27 @@ export class TransferOrchestrator extends EventEmitter {
       this.emit('event', { type: 'outbound:failed', transferId, error: 'Cancelled' } satisfies OrchestratorEvent);
     }
     return true;
+  }
+
+  /** Abort every active transfer — called on app shutdown so no threads/timers linger. */
+  cancelAll(): void {
+    // Stop the stall-watch timer.
+    if (this.stallTimer) { clearTimeout(this.stallTimer); this.stallTimer = null; }
+    // Abort all outbound AbortControllers (QUIC / stream senders).
+    for (const [id, ctrl] of this.outAborts) {
+      try { ctrl.abort(); } catch {}
+      for (const fn of this.outStreams.get(id) ?? []) { try { fn(); } catch {} }
+    }
+    this.outAborts.clear();
+    this.outStreams.clear();
+    this.outbound.clear();
+    this.inbound.clear();
+    this.inflight.clear();
+    this.pendingApprovals.forEach(({ resolve, timer }) => {
+      clearTimeout(timer);
+      try { resolve('declined'); } catch {}
+    });
+    this.pendingApprovals.clear();
   }
 
   private async completeOutbound(transferId: string, result: TransferComplete, peerName: string) {

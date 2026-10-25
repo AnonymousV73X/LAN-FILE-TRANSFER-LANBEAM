@@ -16,6 +16,8 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, powerSaveBlocker, powerMonitor } from 'electron';
 import * as path from 'path';
 import { promises as fs } from 'fs';
+import * as http from 'http';
+import { randomBytes } from 'crypto';
 import QRCode from 'qrcode';
 import os from 'os';
 import { StateStore } from './store';
@@ -53,6 +55,10 @@ let pairManager: PairingManager | null = null;
 let store: StateStore | null = null;
 let httpPort = 0;
 let baseUrl = '';
+let httpClose: (() => Promise<void>) | null = null; // HTTP server shutdown handle
+// Shared secret for the built-in speed test endpoint — lets the desktop
+// self-test its own transfer engine without being a paired device.
+let speedtestKey = randomBytes(24).toString('base64url');
 let lanBeamIpUrl = '';   // direct-IP fallback link shown under the QR
 
 // ---------------------------------------------------------------------------
@@ -283,6 +289,52 @@ function registerIpc() {
       log.error('[benchmark] Run failed:', err);
       throw err;
     }
+  });
+
+  // Transfer-engine speed test: measures the app's own HTTP stack by pulling
+  // 32MB of incompressible RAM bytes through the real server — once as a
+  // single stream (how PC→phone sends work today), then as 6 parallel range
+  // lanes (what multi-lane would buy). Loopback-only: this is the engine
+  // ceiling; the over-the-air number comes from the phone's speed test card.
+  ipcMain.handle('speedtest:run', async () => {
+    if (!httpPort) throw new Error('local server not started');
+    const TOTAL = 32 * 1024 * 1024;
+    const LANES = 6;
+    const base = `http://127.0.0.1:${httpPort}`;
+    const pull = (range?: string) => new Promise<number>((resolve, reject) => {
+      const req = http.get(`${base}/api/speedtest?bytes=${TOTAL}&key=${encodeURIComponent(speedtestKey)}`, {
+        headers: range ? { Range: range } : {},
+      }, (res) => {
+        if (res.statusCode !== 200 && res.statusCode !== 206) { res.resume(); reject(new Error(`HTTP ${res.statusCode}`)); return; }
+        let n = 0;
+        res.on('data', (c: Buffer) => { n += c.length; });
+        res.on('end', () => resolve(n));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+    });
+    const mbps = (bytes: number, ms: number) => Math.round((bytes * 8) / (ms / 1000) / 1e6);
+    // Phase 1 — one stream, exactly like a PC→phone send today.
+    const t1 = performance.now();
+    const n1 = await pull();
+    const d1 = performance.now() - t1;
+    if (n1 !== TOTAL) throw new Error(`engine test: got ${n1} of ${TOTAL} bytes`);
+    await new Promise(r => setTimeout(r, 150));
+    // Phase 2 — six lanes, each a byte-range slice of the same 32MB.
+    const lane = Math.ceil(TOTAL / LANES);
+    const t2 = performance.now();
+    const counts = await Promise.all(Array.from({ length: LANES }, (_, i) => {
+      const s = i * lane;
+      const e = Math.min(TOTAL, s + lane) - 1;
+      return pull(`bytes=${s}-${e}`);
+    }));
+    const d2 = performance.now() - t2;
+    const n2 = counts.reduce((a, b) => a + b, 0);
+    if (n2 !== TOTAL) throw new Error(`engine lanes test: got ${n2} of ${TOTAL} bytes`);
+    return {
+      single: { mbps: mbps(n1, d1), ms: Math.round(d1), bytes: n1 },
+      lanes: { mbps: mbps(n2, d2), ms: Math.round(d2), bytes: n2, count: LANES },
+    };
   });
 
   ipcMain.handle('app:minimize', () => mainWindow?.minimize());
@@ -554,13 +606,10 @@ async function boot() {
     // Permanent + direct links for /api/state — closures over the module
     // vars because the definitive port/URL only settle after bind + mDNS.
     links: () => ({ permanent: baseUrl || undefined, ip: lanBeamIpUrl || undefined }),
+    speedtestKey,
   });
   httpPort = httpHandle.port;
-
-  // Advertise via mDNS with the PERMANENT hostname (lanbeam.local A record).
-  // The QUIC port (Rust core) is advertised separately when the core is built.
-  mdns.advertise(httpPort, store.localDeviceId, APP_VERSION, PERMANENT_HOST);
-  mdns.browse();
+  httpClose = httpHandle.close;
 
   // The QR / pairing URL: use the direct LAN IP by default so phones never
   // hit mDNS / .local DNS resolution issues (DNS_PROBE_POSSIBLE).
@@ -570,8 +619,22 @@ async function boot() {
   log.info(`[boot] pairing URL: ${baseUrl}`);
 
   await registerIpc();
-  await refreshQr();
+
+  // Instant Shell: the window goes up FIRST. QR generation (CPU-bound), the
+  // mDNS announce/browse and the tray now OVERLAP the page load instead of
+  // serializing ahead of it — on a cold HDD the window appears that much
+  // earlier. The renderer receives the QR through the pairing:qr event
+  // (subscribed before its first await), so nothing functional changes.
   await createWindow();
+
+  // Advertise via mDNS with the PERMANENT hostname (lanbeam.local A record).
+  // The QUIC port (Rust core) is advertised separately when the core is built.
+  mdns.advertise(httpPort, store.localDeviceId, APP_VERSION, PERMANENT_HOST);
+  mdns.browse();
+
+  // Not awaited (same as the 15-min QR interval): the renderer repaints the
+  // QR the moment the pairing:qr event lands.
+  refreshQr().catch(() => {});
   await buildTray();
 
   startNetworkWatcher();
@@ -690,11 +753,53 @@ if (process.argv.includes('--benchmark')) {
   bootBenchmark().catch(err => { console.error(err); process.exit(1); });
 } else {
   app.whenReady().then(boot).catch(err => console.error('Boot failed:', err));
+
   app.on('window-all-closed', () => {
     // Keep running in tray on all platforms.
     if (process.platform === 'darwin') return; // mac standard: stay in menu bar
     // On Windows/Linux, hide to tray — explicit quit from tray menu.
   });
+
   app.on('activate', () => { if (mainWindow === null) createWindow(); });
-  app.on('before-quit', () => { store?.flush(); mdns?.stop(); tray?.destroy(); });
+
+  // ── Clean shutdown: kill every background resource so no zombie processes
+  // linger in Task Manager after the app closes. This is the authoritative
+  // teardown path — both "Quit" from tray and window X-button end up here.
+  app.on('will-quit', (e) => {
+    e.preventDefault(); // hold the quit until async cleanup finishes
+
+    (async () => {
+      try {
+        // 1. Flush settings/state to disk first (fast, synchronous internally).
+        store?.flush();
+
+        // 2. Cancel any in-progress transfers so their worker loops exit.
+        try { orchestrator?.cancelAll?.(); } catch {}
+
+        // 3. Stop mDNS advertising/browsing (sends mDNS goodbye packets).
+        try { mdns?.stop(); } catch {}
+
+        // 4. Close the HTTP server — stops accepting new connections and
+        //    waits for existing keep-alive connections to drain (max 2s).
+        if (httpClose) {
+          try {
+            await Promise.race([
+              httpClose(),
+              new Promise<void>(r => setTimeout(r, 2000)),
+            ]);
+          } catch {}
+          httpClose = null;
+        }
+
+        // 5. Remove tray icon so it disappears immediately.
+        try { tray?.destroy(); tray = null; } catch {}
+
+      } finally {
+        // Force-exit: removes ALL remaining Node libuv handles (timers,
+        // keep-alive sockets, bonjour UDP, etc.) so nothing lingers in
+        // Task Manager.
+        app.exit(0);
+      }
+    })();
+  });
 }
