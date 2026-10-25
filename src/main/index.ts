@@ -13,7 +13,7 @@
  *   5. Open the main window; register IPC handlers.
  *   6. If --benchmark flag: run benchmark and exit.
  */
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, powerSaveBlocker, powerMonitor } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, dialog, screen, powerSaveBlocker, powerMonitor, Notification } from 'electron';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import * as http from 'http';
@@ -446,6 +446,30 @@ function registerIpc() {
   // Forward orchestrator events to the renderer
   orchestrator!.on('event', (ev: OrchestratorEvent) => {
     mainWindow?.webContents.send('transfer:event', ev);
+
+    // OS notification + sound when transfer completes and app is not focused.
+    // Only fires when the window is hidden, minimised, or out of focus so we
+    // don't interrupt the user who is already watching the card.
+    if (ev.type === 'inbound:complete' || ev.type === 'outbound:complete') {
+      const win = mainWindow;
+      const appFocused = win && !win.isDestroyed() && win.isFocused();
+      if (!appFocused && Notification.isSupported()) {
+        const r = (ev as any).result;
+        const fileName = r?.fileName || 'File';
+        const direction = r?.direction === 'out' ? 'Sent' : 'Received';
+        const peerName = r?.peerName || 'device';
+        const notif = new Notification({
+          title: 'LANBeam — Transfer Complete',
+          body: direction + ': ' + fileName + ' ' + (r && r.direction === 'out' ? 'to' : 'from') + ' ' + peerName,
+          icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
+          silent: false,
+        });
+        notif.on('click', () => {
+          if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+        });
+        notif.show();
+      }
+    }
   });
 }
 

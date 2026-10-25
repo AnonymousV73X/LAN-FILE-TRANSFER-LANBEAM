@@ -633,15 +633,23 @@ async function onFilesPicked(files, targetDevice) {
       }
     }
 
-    // Multi-file queue mode: simultaneous (parallel) or sequential (one-by-one)
-    const isSimultaneous = state.settings?.sendQueueMode === "simultaneous";
-    const sendSingle = async (file) => {
+    // Multi-file queue mode:
+    //   Sequential   = one card at a time; the next file only starts AFTER
+    //                  the current transfer fully completes or fails.
+    //   Simultaneous = all files start immediately, each with its own card.
+    const isSimultaneous = state.settings && state.settings.sendQueueMode === "simultaneous";
+
+    // Initialise resolver map -- the transfer:event handler resolves
+    // these when a transfer's complete/failed event fires.
+    if (!state._seqResolvers) state._seqResolvers = new Map();
+
+    const stageAndCard = async function(file) {
       const fp = file.path || file.name;
       const name =
-        file.name || (typeof fp === "string" ? fp.split(/[\\/]/).pop() : "file");
+        file.name || (typeof fp === "string" ? fp.split(/[\/]/).pop() : "file");
       if (!fp) {
-        failTransferCard(`Cannot read “${name}” — the file has no local path`);
-        return;
+        failTransferCard("Cannot read \"" + name + "\" — the file has no local path");
+        return null;
       }
       try {
         const tid = await window.lanbeam.transfer.send({
@@ -668,17 +676,38 @@ async function onFilesPicked(files, targetDevice) {
             "out",
           );
         }
+        return tid;
       } catch (err) {
         console.error("Failed to send file:", name, err);
         failTransferCard(err && err.message ? err.message : "send failed");
+        return null;
       }
     };
 
+    // Returns a Promise that resolves when the given transfer finishes.
+    // The transfer:event handler resolves these via state._seqResolvers.
+    const waitForTransfer = function(tid) {
+      return new Promise(function(resolve) {
+        if (!tid) return resolve(false);
+        state._seqResolvers.set(tid, resolve);
+        // Safety valve: unblock after 5 min in case an event is lost
+        setTimeout(function() {
+          if (state._seqResolvers.has(tid)) {
+            state._seqResolvers.delete(tid);
+            resolve(false);
+          }
+        }, 5 * 60 * 1000);
+      });
+    };
+
     if (isSimultaneous) {
-      await Promise.all(files.map(sendSingle));
+      // All files launch at once -- each gets its own independent card
+      await Promise.all(files.map(stageAndCard));
     } else {
+      // Sequential: one card visible at a time; wait for full completion
       for (const file of files) {
-        await sendSingle(file);
+        const tid = await stageAndCard(file);
+        if (tid) await waitForTransfer(tid);
       }
     }
   } catch (err) {
@@ -1792,6 +1821,35 @@ const TOAST_ICON_CLOSE =
  *                     history-entry fields: fileName, fileSize, direction,
  *                     peerName, filePath, averageThroughputMbps, integrityOk).
  */
+
+// ---------------------------------------------------------------------------
+// Transfer completion sound -- synthesised via Web Audio API, no external
+// file needed. Plays a brief two-tone chime only when the window is out of
+// focus (document.hidden). Silently skips if AudioContext is unavailable.
+// ---------------------------------------------------------------------------
+function playTransferCompleteSound() {
+  try {
+    if (!window.AudioContext && !window.webkitAudioContext) return;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const now = ctx.currentTime;
+    [[880, 0, 0.12], [1320, 0.13, 0.22]].forEach(function(spec) {
+      const freq = spec[0], start = spec[1], end = spec[2];
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + start);
+      gain.gain.setValueAtTime(0, now + start);
+      gain.gain.linearRampToValueAtTime(0.18, now + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + end);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + start);
+      osc.stop(now + end);
+    });
+    setTimeout(function() { try { ctx.close(); } catch(e) {} }, 600);
+  } catch(e) {}
+}
+
 function showCompletionToast(r) {
   if (!r || typeof r !== "object") return;
   const fileName = r.fileName || "File";
@@ -2062,6 +2120,11 @@ function bindTransferEvents() {
       showCompletionToast(ev.result);
     } else if (ev.type === "inbound:failed" || ev.type === "outbound:failed") {
       failTransferCard(ev.error, ev.transferId);
+      // Unblock sequential queue on failure so next file can proceed
+      if (state._seqResolvers) {
+        const _fres = state._seqResolvers.get(ev.transferId);
+        if (_fres) { _fres(false); state._seqResolvers.delete(ev.transferId); }
+      }
     } else if (ev.type === "inbound:accept-request") {
       // receiveMode 'ask' → the desktop user decides: pop the Accept /
       // Decline card and answer the held /api/transfer/start through IPC.
