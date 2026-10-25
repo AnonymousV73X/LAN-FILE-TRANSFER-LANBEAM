@@ -1,13 +1,13 @@
 {
   "name": "lanbeam",
   "version": "1.0.0",
-  "description": "LANBeam \u2014 Record-breaking zero-config LAN file transfer. Electron + Rust (napi-rs) + QUIC + BLAKE3 Merkle + zstd + mDNS.",
+  "description": "LANBeam — Record-breaking zero-config LAN file transfer. Electron + Rust (napi-rs) + QUIC + BLAKE3 Merkle + zstd + mDNS.",
   "main": "dist/main/index.js",
   "author": "LANBeam",
   "license": "MIT",
   "scripts": {
     "build:ts": "tsc -p tsconfig.json",
-    "build:native": "napi build --platform --release -p native",
+    "build:native": "node scripts/build-native.js",
     "build:renderer": "node scripts/copy-renderer.js",
     "build:phone": "node scripts/copy-phone.js",
     "build": "npm run build:ts && npm run build:native && npm run build:renderer && npm run build:phone",
@@ -49,7 +49,7 @@
   "build": {
     "appId": "com.lanbeam.app",
     "productName": "LANBeam",
-    "copyright": "\u00a9 2024 LANBeam. All rights reserved.",
+    "copyright": "© 2024 LANBeam. All rights reserved.",
     "publish": {
       "provider": "github",
       "owner": "AnonymousV73X",
