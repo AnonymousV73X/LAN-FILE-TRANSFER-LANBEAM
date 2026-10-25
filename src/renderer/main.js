@@ -689,8 +689,13 @@ async function onFilesPicked(files, targetDevice) {
     const waitForTransfer = function(tid) {
       return new Promise(function(resolve) {
         if (!tid) return resolve(false);
+        // Already completed before we got here (fast LAN race condition) — resolve now
+        if (state._completedTids && state._completedTids.has(tid)) {
+          state._completedTids.delete(tid);
+          return resolve(true);
+        }
         state._seqResolvers.set(tid, resolve);
-        // Safety valve: unblock after 5 min in case an event is lost
+        // Safety valve: unblock after 5 min in case an event is ever lost
         setTimeout(function() {
           if (state._seqResolvers.has(tid)) {
             state._seqResolvers.delete(tid);
@@ -2118,12 +2123,34 @@ function bindTransferEvents() {
       // actions so the user can act on it without having to navigate to
       // the History view. Multiple transfers stack vertically.
       showCompletionToast(ev.result);
+      // Play completion chime when window is hidden/backgrounded
+      if (document.hidden) playTransferCompleteSound();
+      // Unblock sequential queue. Also track in _completedTids so waitForTransfer
+      // resolves instantly if the event raced ahead of resolver registration.
+      {
+        const _tid = (ev.result && ev.result.fileId) || ev.transferId;
+        if (_tid) {
+          if (!state._completedTids) state._completedTids = new Set();
+          state._completedTids.add(_tid);
+        }
+        if (state._seqResolvers && _tid) {
+          const _res = state._seqResolvers.get(_tid);
+          if (_res) { _res(true); state._seqResolvers.delete(_tid); }
+        }
+      }
     } else if (ev.type === "inbound:failed" || ev.type === "outbound:failed") {
       failTransferCard(ev.error, ev.transferId);
-      // Unblock sequential queue on failure so next file can proceed
-      if (state._seqResolvers) {
-        const _fres = state._seqResolvers.get(ev.transferId);
-        if (_fres) { _fres(false); state._seqResolvers.delete(ev.transferId); }
+      // Unblock sequential queue on failure so remaining files can proceed
+      {
+        const _ftid = ev.transferId;
+        if (_ftid) {
+          if (!state._completedTids) state._completedTids = new Set();
+          state._completedTids.add(_ftid);
+        }
+        if (state._seqResolvers && _ftid) {
+          const _fres = state._seqResolvers.get(_ftid);
+          if (_fres) { _fres(false); state._seqResolvers.delete(_ftid); }
+        }
       }
     } else if (ev.type === "inbound:accept-request") {
       // receiveMode 'ask' → the desktop user decides: pop the Accept /
