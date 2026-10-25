@@ -2286,13 +2286,8 @@ function updateTransferCard(p, direction = "in") {
   if (speedUnit) speedUnit.textContent = unit;
 
   const sparkEl = card.querySelector(`#tspark-${tid}`);
-  if (sparkEl && p.sparkline?.length) {
-    const pts = p.sparkline.slice(-30);
-    const max = Math.max(1, ...pts);
-    const d = pts
-      .map((y, i) => `${(i / (pts.length - 1 || 1)) * 100},${30 - (y / max) * 26}`)
-      .join(" ");
-    sparkEl.innerHTML = `<polyline fill="none" stroke="currentColor" stroke-width="2" points="${d}"/>`;
+  if (sparkEl) {
+    renderSparklineToSvg(sparkEl, p.sparkline?.slice(-30) || [], tid);
   }
   state.currentTransfer = p;
 }
