@@ -55,6 +55,14 @@ export interface HttpServerOptions {
    * months without ever scanning the QR again.
    */
   links?: () => { permanent?: string; ip?: string };
+  /**
+   * Shared secret for the built-in transfer-engine speed test. Lets the
+   * desktop's own `speedtest:run` IPC self-test reach /api/speedtest without
+   * being a paired device — the request travels through the REAL HTTP stack
+   * (parser, auth, headers, sockets) so the number it produces is honest.
+   * Phones authenticate to the same route with their normal pair secret.
+   */
+  speedtestKey?: string;
 }
 
 export interface HttpServerHandle {
@@ -176,10 +184,107 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
   // Session cookie store: cookie -> deviceId (paired).
   const sessions = new Map<string, string>();
   // deviceId -> last presence-notification time (throttle for renderer IPC).
-  const lastPresenceNotify = new Map<string, number>();
+  // Live presence engine. A device is ONLINE while it has an open presence
+  // stream, an in-flight request (uploads/downloads count), or recent activity.
+  // Closing the tab drops the stream socket -> offline within ~PRESENCE_GRACE_MS.
+  const PRESENCE_TTL_MS = 35_000;
+  const PRESENCE_GRACE_MS = 1_500;
+  interface Live { streams: number; inflight: number; expiresAt: number }
+  const live = new Map<string, Live>();
+  const liveOf = (id: string): Live => {
+    let l = live.get(id);
+    if (!l) { l = { streams: 0, inflight: 0, expiresAt: 0 }; live.set(id, l); }
+    return l;
+  };
+  const isLive = (id: string) => {
+    const l = live.get(id);
+    return !!l && (l.streams > 0 || l.inflight > 0 || Date.now() < l.expiresAt);
+  };
+  /** Single place that flips presence and tells the renderer instantly. */
+  function syncPresence(id: string) {
+    if (opts.store.setOnline(id, isLive(id))) {
+      const dev = opts.store.pairedDevices.find(d => d.deviceId === id);
+      if (dev) opts.onDevicePaired?.(dev);
+    }
+  }
+  function markActive(id: string, ttl = PRESENCE_TTL_MS) {
+    liveOf(id).expiresAt = Date.now() + ttl;
+    syncPresence(id);
+  }
+  const presenceSweeper = setInterval(() => {
+    for (const id of opts.store.onlineDeviceIds()) syncPresence(id);
+  }, 500);
+  presenceSweeper.unref?.();
   // transferId -> bytes actually streamed out across ALL requests (a download
   // manager may fetch one file via several Range requests).
   const servedBytes = new Map<string, number>();
+
+  // ─── Verified-receive plumbing (PC → phone) ────────────────────────────
+  //
+  // 1. SIGNED DOWNLOAD LINKS. The plain <a> click in directDownload() can
+  //    carry NO custom headers — only cookies. If the session cookie died
+  //    (desktop restart, browser eviction) the click used to download a JSON
+  //    401 body as a "file". Every pending entry now ships a per-device,
+  //    per-transfer token URL (?t=...) that authenticates the download even
+  //    with zero cookies — and doubles as a HEAD-able pre-flight URL.
+  // 2. GRACE REMOVAL. The outbound entry used to be dropped the moment the
+  //    server flushed the last byte into the socket — but the phone may
+  //    still have failed to store it (download manager gave up, tab died).
+  //    Now the entry survives a grace window so the phone can retry / ack;
+  //    /dlstatus tells the phone what the server actually observed.
+  interface DlToken { transferId: string; deviceId: string; expiresAt: number }
+  const dlTokens = new Map<string, DlToken>();
+  const dlTokenCache = new Map<string, { token: string; expiresAt: number }>(); // `${deviceId}:${transferId}` -> token
+  const DL_TOKEN_TTL_MS = 30 * 60_000;
+  function mintDlToken(transferId: string, deviceId: string): string {
+    const key = `${deviceId}:${transferId}`;
+    const cached = dlTokenCache.get(key);
+    if (cached && cached.expiresAt - Date.now() > 60_000) return cached.token;
+    const token = randomBytes(24).toString('base64url');
+    const expiresAt = Date.now() + DL_TOKEN_TTL_MS;
+    dlTokens.set(token, { transferId, deviceId, expiresAt });
+    dlTokenCache.set(key, { token, expiresAt });
+    return token;
+  }
+  const dlTokenSweeper = setInterval(() => {
+    const now = Date.now();
+    for (const [t, e] of dlTokens) if (e.expiresAt < now) dlTokens.delete(t);
+    for (const [k, c] of dlTokenCache) if (c.expiresAt < now) dlTokenCache.delete(k);
+  }, 60_000);
+  dlTokenSweeper.unref?.();
+
+  // Delayed outbound-entry cleanup: run after a full serve (or dlfailed) so
+  // the phone has a window to ack (instant removal) or retry (Range resume).
+  const removalTimers = new Map<string, NodeJS.Timeout>();
+  function scheduleOutboundGrace(transferId: string, delayMs = 60_000): void {
+    if (removalTimers.has(transferId)) return;
+    removalTimers.set(transferId, setTimeout(() => {
+      removalTimers.delete(transferId);
+      const entry = opts.orchestrator.getOutbound(transferId);
+      const removed = opts.orchestrator.removeOutbound(transferId);
+      if (removed && entry?.stagedBy === 'relay' && entry.keepCopy === false) fs.unlink(entry.filePath).catch(() => {});
+    }, delayMs));
+  }
+  function cancelOutboundGrace(transferId: string): void {
+    const t = removalTimers.get(transferId);
+    if (t) { clearTimeout(t); removalTimers.delete(transferId); }
+  }
+
+  // ---------------------------------------------------------------------
+  // Speed test payload: 32MB of true random bytes, generated ONCE per
+  // server lifetime and served from RAM. Random (not a tiled pattern) on
+  // purpose — a repeating block would compress on the wire and inflate the
+  // number; this way the measurement is the RAW engine/radio rate. Slices
+  // are handed out with Buffer.subarray (a zero-copy view, no allocation
+  // per request).
+  // ---------------------------------------------------------------------
+  const SPEEDTEST_MAX_BYTES = 32 * 1024 * 1024;
+  const SPEEDTEST_MIN_BYTES = 256 * 1024;
+  let speedtestPayload: Buffer | null = null;
+  function getSpeedtestPayload(): Buffer {
+    if (!speedtestPayload) speedtestPayload = randomBytes(SPEEDTEST_MAX_BYTES);
+    return speedtestPayload;
+  }
 
   function issueSession(deviceId: string): string {
     const cookie = randomBytes(32).toString('base64url');
@@ -204,6 +309,14 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
     // identical security to the previous release, and the phone app now
     // sends the secret on every request anyway.
     const headerDeviceId = req.headers['x-device-id'] as string | undefined;
+    {
+      const sec = pairSecretFromRequest(req);
+      if (sec) {
+        const fp = hashPairSecret(sec);
+        const byFp = opts.store.pairedDevices.find(d => d.fingerprint === fp);
+        if (byFp) return byFp.deviceId; // secret IS the identity — survives deviceId loss
+      }
+    }
     if (headerDeviceId) {
       const found = opts.store.pairedDevices.find(d => d.deviceId === headerDeviceId);
       if (found) {
@@ -240,10 +353,22 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       const parsed = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       const pathname = parsed.pathname;
 
+      // CORS is intentionally wide open: pairing secrets and download tokens
+      // are unguessable capabilities carried IN the request (headers / ?t=),
+      // so any origin may present one. Dual-origin lane sharding relies on
+      // this: the phone page is served from one address (e.g. the LAN IP) but
+      // pulls its 12 parallel lanes from TWO addresses (IP + mDNS hostname),
+      // which the browser treats as separate origins — each with its own
+      // 6-connection HTTP/1.1 pool. Cross-origin lanes therefore must be able
+      // to (a) send Range + auth headers (preflight), (b) READ Content-Range
+      // back (Expose-Headers) — the lane engine verifies every reply starts
+      // at the exact requested byte — and (c) cache the preflight so the 12
+      // lanes don't pay an OPTIONS round-trip each.
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Chunk-Index, X-File-Id, X-Compressed, X-Device-Id');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Content-Range, Range, X-Chunk-Index, X-File-Id, X-Compressed, X-Device-Id, X-Pair-Secret, X-Speedtest-Key, Authorization');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+      res.setHeader('Access-Control-Max-Age', '600');
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
       // ---------------------------------------------------------------
@@ -298,6 +423,17 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         }
         const body = await readBody(req, 64 * 1024);
         const reqObj = JSON.parse(body.toString('utf8')) as PairingRequest;
+        // Identity resolution — a returning phone must NEVER become a second card.
+        const pairSec = pairSecretFromRequest(req);
+        const sessCookie = req.headers.cookie?.split(';').map(x => x.trim()).find(x => x.startsWith('lanbeam-session='));
+        const sessId = sessCookie ? sessions.get(sessCookie.slice('lanbeam-session='.length)) : undefined;
+        const existing =
+          opts.store.findSameDevice({
+            deviceId: reqObj.deviceId,
+            fingerprint: pairSec ? hashPairSecret(pairSec) : undefined,
+            name: reqObj.name, kind: reqObj.kind, ip: clientIp(req),
+          }) || (sessId ? opts.store.pairedDevices.find(d => d.deviceId === sessId) : undefined);
+        if (existing) reqObj.deviceId = existing.deviceId;
         const paired = opts.pairManager.toPairedDevice(reqObj);
         // Capture the phone's live network identity right at pairing time so
         // the desktop device popup shows accurate connection details.
@@ -309,7 +445,8 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         const pairSecret = issuePairSecret();
         paired.fingerprint = hashPairSecret(pairSecret);
         opts.store.addPairedDevice(paired);
-        opts.onDevicePaired?.(paired);
+        markActive(paired.deviceId);
+        opts.onDevicePaired?.(opts.store.pairedDevices.find(d => d.deviceId === paired.deviceId) ?? paired);
         setPairCookies(res, paired.deviceId, pairSecret);
         sendJson(res, 200, { ok: true, paired, pairSecret });
         return;
@@ -333,6 +470,13 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         // resolve the real identity through that cookie before giving up.
         // (The phone adopts the returned canonical deviceId — see app.js.)
         let recoveredViaSession = false;
+        if (!device) {
+          const helloSecret = pairSecretFromRequest(req);
+          if (helloSecret) {
+            const fp = hashPairSecret(helloSecret);
+            device = opts.store.pairedDevices.find(d => d.fingerprint === fp);
+          }
+        }
         if (!device) {
           const sessionCookie = req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('lanbeam-session='));
           const sessionDeviceId = sessionCookie ? sessions.get(sessionCookie.slice('lanbeam-session='.length)) : undefined;
@@ -372,7 +516,8 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
             opts.store.addPairedDevice(device!);
           }
           setPairCookies(res, device!.deviceId, pairSecretForCookies);
-          opts.onDevicePaired?.(device!);
+          markActive(device!.deviceId);
+          opts.onDevicePaired?.(opts.store.pairedDevices.find(d => d.deviceId === device!.deviceId) ?? device!);
           // ALWAYS hand the secret back over this trusted channel: a phone
           // that reconnects via the lanbeam-pair COOKIE just had its
           // localStorage evicted — without this echo its localStorage would
@@ -413,6 +558,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
           device.ip = clientIp(req) ?? device.ip;
           device.userAgent = req.headers['user-agent'] ?? device.userAgent;
           opts.store.addPairedDevice(device);
+          markActive(device.deviceId);
           opts.onDevicePaired?.(device);
           setPairCookies(res, device.deviceId, pairSecret);
           sendJson(res, 200, { ok: true, paired: { deviceId: device.deviceId, name: device.name, kind: device.kind }, pairSecret });
@@ -424,28 +570,79 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         return;
       }
 
-      // Everything below requires a paired session
-      const deviceId = authDevice(req);
+      // Everything below requires a paired session. EXCEPTION: the file
+      // endpoint accepts a signed download token (?t=...) — minted per device
+      // when the pending list was served — so the OS download manager's plain
+      // GET works even when cookies were evicted. The token only ever
+      // authorizes ITS OWN transfer's file route, nothing else.
+      let deviceId = authDevice(req);
       if (!deviceId) {
-        sendJson(res, 401, { error: 'not paired' });
+        const dlTok = parsed.searchParams.get('t');
+        const fileMatchForTok = pathname.match(/^\/api\/transfer\/([^/]+)\/file$/);
+        if (dlTok && fileMatchForTok) {
+          const tok = dlTokens.get(dlTok);
+          if (tok && tok.expiresAt > Date.now() && tok.transferId === fileMatchForTok[1]) {
+            deviceId = tok.deviceId;
+          }
+        }
+        // Transfer-engine self-test: the desktop's own speedtest:run IPC
+        // authenticates with the shared key. 'engine-test' never lands in
+        // pairedDevices (touchPairedDevice no-ops on unknown ids) — it only
+        // keeps the common authenticated-request bookkeeping happy.
+        if (!deviceId && pathname === '/api/speedtest' && opts.speedtestKey) {
+          const supplied = parsed.searchParams.get('key') ?? (req.headers['x-speedtest-key'] as string | undefined);
+          if (supplied && supplied === opts.speedtestKey) deviceId = 'engine-test';
+        }
+      }
+      if (!deviceId) {
+        sendJson(res, 401, { error: 'not paired', code: 'E_NOT_PAIRED' });
         return;
       }
       // Refresh lastSeen AND the live network identity on every authenticated
       // request — this is what keeps the device popup accurate over time.
       opts.store.touchPairedDevice(deviceId, { ip: clientIp(req), userAgent: req.headers['user-agent'] });
-      // Live presence: tell the renderer this device is still talking to us.
-      // Without this the desktop's device list only refreshed on pair/heartbeat
-      // events, so a phone that was actively mid-transfer could sit at
-      // "0 devices online" on the home view (its lastSeen was fresh in the
-      // store, but the renderer never heard about it). Throttled to 5s/device
-      // so the 3s pending-poll doesn't spam IPC.
+      // Presence stream: an open socket = device is here. Its close event is
+      // the millisecond-accurate "left the site" signal.
+      if (pathname === '/api/presence' && req.method === 'GET') {
+        const l = liveOf(deviceId);
+        l.streams++;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive' });
+        res.write(':ok\n\n');
+        syncPresence(deviceId);
+        const ping = setInterval(() => { try { res.write(':\n\n'); } catch {} }, 10_000);
+        let closed = false;
+        const onGone = () => {
+          if (closed) return; closed = true;
+          clearInterval(ping);
+          l.streams = Math.max(0, l.streams - 1);
+          if (l.streams === 0) l.expiresAt = Math.min(l.expiresAt, Date.now() + PRESENCE_GRACE_MS);
+          syncPresence(deviceId);
+        };
+        res.on('close', onGone); req.on('close', onGone); res.on('error', onGone);
+        return;
+      }
+      // Explicit goodbye (pagehide beacon) — instant offline unless a transfer is still running.
+      if (pathname === '/api/bye' && req.method === 'POST') {
+        const l = liveOf(deviceId);
+        l.expiresAt = Date.now();
+        setTimeout(() => syncPresence(deviceId), 400);
+        res.writeHead(204); res.end();
+        return;
+      }
+      // Any other authenticated request = proof of life; an open one (a long
+      // upload/download) keeps the device online until it finishes.
       {
-        const now = Date.now();
-        const dev = opts.store.pairedDevices.find(d => d.deviceId === deviceId);
-        if (dev && now - (lastPresenceNotify.get(deviceId) ?? 0) > 5000) {
-          lastPresenceNotify.set(deviceId, now);
-          opts.onDevicePaired?.(dev);
-        }
+        const l = liveOf(deviceId);
+        l.inflight++;
+        l.expiresAt = Date.now() + PRESENCE_TTL_MS;
+        syncPresence(deviceId);
+        let fin = false;
+        const done = () => {
+          if (fin) return; fin = true;
+          l.inflight = Math.max(0, l.inflight - 1);
+          l.expiresAt = Date.now() + PRESENCE_TTL_MS;
+        };
+        res.on('close', done); res.on('finish', done);
       }
 
       // ---------------------------------------------------------------
@@ -475,8 +672,55 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
             fileName: t.manifest.fileName,
             fileSize: t.manifest.fileSize,
             originName: t.originName || (t.stagedBy === 'relay' ? 'Another device' : undefined),
+            // Signed link — authenticates the download click without cookies
+            // and doubles as the pre-flight URL for the verified receive loop.
+            downloadUrl: `/api/transfer/${t.manifest.fileId}/file?t=${mintDlToken(t.manifest.fileId, deviceId)}`,
           }));
         sendJson(res, 200, { transfers: pending });
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Speed test: pull raw incompressible bytes from RAM. Auth is either
+      // a paired device (phone, normal secret headers) or the desktop's
+      // engine-test key (see the auth fallback above). Supports HEAD and
+      // single-byte-range GETs so multi-lane tests can slice it in parallel
+      // exactly like a range download would.
+      // ---------------------------------------------------------------
+      if (pathname === '/api/speedtest' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const payload = getSpeedtestPayload();
+        const bytesRaw = parseInt(parsed.searchParams.get('bytes') || '', 10);
+        const size = Number.isFinite(bytesRaw)
+          ? Math.min(SPEEDTEST_MAX_BYTES, Math.max(SPEEDTEST_MIN_BYTES, bytesRaw))
+          : SPEEDTEST_MAX_BYTES;
+        const stHeaders: Record<string, string | number> = {
+          'Content-Type': 'application/octet-stream',
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        };
+        if (req.method === 'HEAD') {
+          res.writeHead(200, { ...stHeaders, 'Content-Length': size });
+          res.end();
+          return;
+        }
+        const rm = req.headers.range ? req.headers.range.match(/^bytes=(\d*)-(\d*)$/) : null;
+        if (rm) {
+          let st = rm[1] ? parseInt(rm[1], 10) : 0;
+          let en = rm[2] ? parseInt(rm[2], 10) : size - 1;
+          if (!rm[1] && rm[2]) { st = Math.max(0, size - parseInt(rm[2], 10)); en = size - 1; }
+          if (Number.isNaN(st) || Number.isNaN(en) || st > en || st >= size) {
+            res.writeHead(416, { 'Content-Range': `bytes */${size}` });
+            res.end();
+            return;
+          }
+          en = Math.min(en, size - 1);
+          res.writeHead(206, { ...stHeaders, 'Content-Range': `bytes ${st}-${en}/${size}`, 'Content-Length': en - st + 1 });
+          res.end(payload.subarray(st, en + 1));
+          return;
+        }
+        res.writeHead(200, { ...stHeaders, 'Content-Length': size });
+        res.end(size === payload.length ? payload : payload.subarray(0, size));
         return;
       }
       if (pathname === '/api/state' && req.method === 'GET') {
@@ -501,8 +745,10 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       if (pathname === '/api/webtransport-check' && req.method === 'GET') {
         // QUIC port lives in the Rust core; if it's running, expose its port here.
         // v1: not exposed — phone falls back to HTTP parallel-range.
+        // httpParallelStreams = the upload pump's connection budget: 2 origins
+        // × 6 per-host HTTP/1.1 connections (dual-origin chunk sharding).
         res.writeHead(200, { 'webtransport': 'false', 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ webtransport: false, httpParallelStreams: 8 }));
+        res.end(JSON.stringify({ webtransport: false, httpParallelStreams: 12 }));
         return;
       }
 
@@ -610,7 +856,11 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       const completeMatch = pathname.match(/^\/api\/transfer\/([^/]+)\/complete$/);
       if (completeMatch && req.method === 'POST') {
         const transferId = completeMatch[1];
-        // The orchestrator already completes when all chunks arrive; this is an explicit final ack.
+        // Wait up to 3 seconds for orchestrator to finish any final chunk writes/inbound completion
+        for (let i = 0; i < 30; i++) {
+          if (!opts.orchestrator.getInbound(transferId)) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -626,12 +876,12 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       if (fileMatch && (req.method === 'GET' || req.method === 'HEAD')) {
         const transferId = fileMatch[1];
         const out = opts.orchestrator.getOutbound(transferId);
-        if (!out) { sendJson(res, 404, { error: 'no such transfer' }); return; }
+        if (!out) { sendJson(res, 404, { error: 'no such transfer', code: 'E_NO_TRANSFER' }); return; }
         let stat: FsStats;
         try {
           stat = await fs.stat(out.filePath);
         } catch {
-          sendJson(res, 410, { error: 'file no longer available' });
+          sendJson(res, 410, { error: 'file no longer available', code: 'E_FILE_GONE' });
           return;
         }
         // Use only the base name for the download — any folder structure stays
@@ -667,11 +917,18 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
           servedBytes.set(transferId, total);
           opts.orchestrator.reportOutboundServedBytes(transferId, n);
           if (total >= stat.size) {
-            // Whole file has been handed over at some point — done.
-            opts.orchestrator.completeOutboundHttp(transferId).catch(() => {});
+            // Whole file has been handed over at some point — done. This path
+            // also covers download managers that fetch via multiple Ranges
+            // (no single non-range 'finish'), so grace-removal is scheduled
+            // here too — otherwise the entry would live until an ack that a
+            // dead phone can never send.
+            opts.orchestrator.completeOutboundHttp(transferId)
+              .then(() => scheduleOutboundGrace(transferId, 60_000))
+              .catch(() => {});
           }
         };
         const wireProgress = (stream: import('stream').Readable, resp: http.ServerResponse) => {
+          opts.orchestrator.noteOutboundStreamOpen(transferId);
           stream.on('data', (c: Buffer) => markServed(c.length));
           opts.orchestrator.registerOutboundAbort(transferId, () => { stream.destroy(); resp.destroy(); });
           // 'finish' = response fully flushed. For a non-range request that is
@@ -679,16 +936,26 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
           // partial range never reached the full size.
           resp.on('finish', () => {
             if (!isRangeReq) {
-              const entry = opts.orchestrator.getOutbound(transferId);
               opts.orchestrator.completeOutboundHttp(transferId).then(() => {
-                // Download finished server-side: drop the entry even if the phone
-                // browser was closed and can never send the ack.
-                opts.orchestrator.removeOutbound(transferId);
-                if (entry?.stagedBy === 'relay' && entry.keepCopy === false) fs.unlink(entry.filePath).catch(() => {});
+                // Keep the entry for a grace window: the phone acks via
+                // /ack when it actually saved the file (instant removal), and
+                // a phone whose download died may still resume via Range.
+                // Browsers that can never ack get cleaned up by the timer
+                // (which also handles the zero-trace relay unlink).
+                scheduleOutboundGrace(transferId, 60_000);
               }).catch(() => {});
             }
           });
+          // 'close' fires on BOTH clean finish and mid-stream death — the
+          // orchestrator uses it to flip the card to "interrupted" when the
+          // phone vanished part-way through.
+          resp.on('close', () => opts.orchestrator.noteOutboundStreamClose(transferId));
         };
+        // 1MB read-ahead chunks: on a multi-hundred-Mbps LAN the 64KB
+        // default means ~16 syscalls + stream-ticks per MB, which throttles
+        // fast links. Bigger reads = fewer round trips through the event
+        // loop, same bytes, no buffering delay (disk read-ahead is µs-scale).
+        const READ_CHUNK = 1024 * 1024;
         const rangeMatch = rangeHdr ? rangeHdr.match(/^bytes=(\d*)-(\d*)$/) : null;
         if (rangeMatch) {
           let start = rangeMatch[1] ? parseInt(rangeMatch[1], 10) : 0;
@@ -710,7 +977,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
             'Content-Length': end - start + 1,
             'Content-Disposition': contentDisposition(downloadName),
           });
-          const stream = createReadStream(out.filePath, { start, end });
+          const stream = createReadStream(out.filePath, { start, end, highWaterMark: READ_CHUNK });
           stream.on('error', () => res.destroy());
           wireProgress(stream, res);
           stream.pipe(res);
@@ -722,7 +989,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
           'Content-Length': stat.size,
           'Content-Disposition': contentDisposition(downloadName),
         });
-        const stream = createReadStream(out.filePath);
+        const stream = createReadStream(out.filePath, { highWaterMark: READ_CHUNK });
         stream.on('error', () => res.destroy());
         wireProgress(stream, res);
         stream.pipe(res);
@@ -736,6 +1003,9 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       const ackMatch = pathname.match(/^\/api\/transfer\/([^/]+)\/ack$/);
       if (ackMatch && req.method === 'POST') {
         const transferId = ackMatch[1];
+        // The phone SAVED the file — cancel any pending grace removal first
+        // so the ack wins the race, then drop the entry immediately.
+        cancelOutboundGrace(transferId);
         // Zero-trace relay: if the receiving phone says "saved" and the entry
         // was a relay staged with keepCopy=false, delete the desktop's staged
         // copy. Desktop-originated sends are NEVER deleted this way — they're
@@ -751,13 +1021,34 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       }
 
       // ---------------------------------------------------------------
+      // Verified-receive endpoints. The phone polls dlstatus to render its
+      // card from SERVER truth (bytes actually handed to sockets, live
+      // streams, interruption) instead of guessing what the OS download
+      // manager did, and reports dlfailed to cancel the grace removal so a
+      // dead download can be retried instead of silently dropped.
+      // ---------------------------------------------------------------
+      const dlStatusMatch = pathname.match(/^\/api\/transfer\/([^/]+)\/dlstatus$/);
+      if (dlStatusMatch && req.method === 'GET') {
+        sendJson(res, 200, opts.orchestrator.getOutboundStatus(dlStatusMatch[1]));
+        return;
+      }
+      const dlFailedMatch = pathname.match(/^\/api\/transfer\/([^/]+)\/dlfailed$/);
+      if (dlFailedMatch && req.method === 'POST') {
+        const transferId = dlFailedMatch[1];
+        cancelOutboundGrace(transferId);
+        log.warn(`[http] Phone reported a failed download for ${transferId} — entry kept for retry`);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      // ---------------------------------------------------------------
       // Transfer: desktop -> phone (outbound, phone pulls ranges)
       // ---------------------------------------------------------------
       const manifestMatch = pathname.match(/^\/api\/transfer\/([^/]+)\/manifest$/);
       if (manifestMatch && req.method === 'GET') {
         const transferId = manifestMatch[1];
         const out = opts.orchestrator.getOutbound(transferId);
-        if (!out) { sendJson(res, 404, { error: 'no such transfer' }); return; }
+        if (!out) { sendJson(res, 404, { error: 'no such transfer', code: 'E_NO_TRANSFER' }); return; }
         sendJson(res, 200, out.manifest);
         return;
       }
@@ -806,7 +1097,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       } else {
         console.error('[http-server] error:', err);
       }
-      if (!res.headersSent) { res.writeHead(500); res.end('Internal error'); }
+      if (!res.headersSent) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'internal error', code: 'E_SERVER' })); }
     }
   });
 
@@ -877,10 +1168,15 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         resolve({
           port: boundPort,
           url,
-          close: () => new Promise<void>((r) => server.close(() => r())),
+          close: () => { clearInterval(presenceSweeper); clearInterval(dlTokenSweeper); for (const t of removalTimers.values()) clearTimeout(t); return new Promise<void>((r) => server.close(() => r())); },
         });
       });
     };
+    // Nagle OFF on every socket, explicitly: small API replies (polls, acks,
+    // manifests) must never sit in a 40ms coalescing timer behind bulk data.
+    // Node 18+ defaults this ON for new sockets — this keeps it guaranteed
+    // across Node versions and platforms. Zero cost, zero risk.
+    server.on('connection', (socket) => { socket.setNoDelay(true); });
     tryListen(opts.port);
   });
 }

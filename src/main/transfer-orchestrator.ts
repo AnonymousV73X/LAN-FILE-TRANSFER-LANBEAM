@@ -49,6 +49,7 @@ export interface InboundTransfer {
   manifest: FileManifest;
   outputDir: string;
   peerName?: string;
+  fileHandle?: any;
   receivedChunks: Set<number>;       // confirmed-verified chunk indices
   failedChunks: number[];            // chunks that needed retransmission
   bytesTransferred: number;
@@ -232,13 +233,8 @@ export class TransferOrchestrator extends EventEmitter {
     const fileParentDir = path.dirname(outPath);
     try {
       await fs.mkdir(fileParentDir, { recursive: true });
-      // Only pre-allocate if file doesn't already exist (resume case).
       const existing = await fs.stat(outPath).catch(() => null);
       if (!existing) {
-        // Create an empty file only. Pre-sizing with a write at EOF forces
-        // NTFS to zero-fill the whole file up front — a multi-second stall
-        // on big files before the first byte moves. Chunk writes at their
-        // offsets extend the file as they land.
         const h = await fs.open(outPath, 'w');
         await h.close();
       }
@@ -250,10 +246,18 @@ export class TransferOrchestrator extends EventEmitter {
     const resume = this.resumeState.get(manifest.merkleRoot);
     const received = resume ? new Set(resume) : new Set<number>();
 
+    let sharedHandle: any = null;
+    try {
+      sharedHandle = await fs.open(outPath, 'r+');
+    } catch (err) {
+      log.warn(`[orchestrator] Could not open shared handle for ${outPath}:`, err);
+    }
+
     const transfer: InboundTransfer = {
       manifest: { ...manifest, fileName: safeRel }, // preserve sanitized relative folder structure
       outputDir,
       peerName,
+      fileHandle: sharedHandle,
       receivedChunks: received,
       failedChunks: [],
       bytesTransferred: 0,
@@ -323,14 +327,17 @@ export class TransferOrchestrator extends EventEmitter {
     }
 
     // Write the verified chunk to disk at its correct offset.
-    // File is pre-allocated in startInbound so 'r+' always works.
     const outPath = path.join(transfer.outputDir, transfer.manifest.fileName);
     try {
-      const handle = await fs.open(outPath, 'r+');
-      try {
-        await handle.write(buf, 0, buf.length, expected.offset);
-      } finally {
-        await handle.close();
+      if (transfer.fileHandle) {
+        await transfer.fileHandle.write(buf, 0, buf.length, expected.offset);
+      } else {
+        const handle = await fs.open(outPath, 'r+');
+        try {
+          await handle.write(buf, 0, buf.length, expected.offset);
+        } finally {
+          await handle.close();
+        }
       }
     } catch (err) {
       log.error(`[orchestrator] Failed to write chunk ${chunkIndex} to ${outPath}:`, err);
@@ -576,6 +583,10 @@ export class TransferOrchestrator extends EventEmitter {
   private async completeInbound(transferId: string, peerName: string) {
     const transfer = this.inbound.get(transferId);
     if (!transfer) return;
+    if (transfer.fileHandle) {
+      try { await transfer.fileHandle.close(); } catch {}
+      transfer.fileHandle = null;
+    }
     const durationMs = Date.now() - transfer.startedAt;
     const avgThroughput = (transfer.bytesTransferred * 8) / 1_000_000 / (durationMs / 1000);
     // Re-verify whole-file integrity by re-reading and re-hashing chunks.
@@ -745,6 +756,10 @@ export class TransferOrchestrator extends EventEmitter {
     if (!inb && !out) return false;
     this.cancelled.add(transferId);
     if (inb) {
+      if (inb.fileHandle) {
+        try { inb.fileHandle.close(); } catch {}
+        inb.fileHandle = null;
+      }
       this.inbound.delete(transferId);
       this.resumeState.delete(inb.manifest.merkleRoot);
       // Tell the UI first (instant), then remove the partial file in the background.
@@ -774,6 +789,12 @@ export class TransferOrchestrator extends EventEmitter {
     }
     this.outAborts.clear();
     this.outStreams.clear();
+    for (const inb of this.inbound.values()) {
+      if (inb.fileHandle) {
+        try { inb.fileHandle.close(); } catch {}
+        inb.fileHandle = null;
+      }
+    }
     this.outbound.clear();
     this.inbound.clear();
     this.inflight.clear();

@@ -16,6 +16,8 @@ const state = {
   webTransportAvailable: false,
   maxParallelStreams: 8,
   defaultChunkSize: 4 * 1024 * 1024, // 4MB
+  altOrigin: '',     // second address of the SAME PC (dual-origin lane sharding)
+  pcWifi: null,      // PC's live radio state — powers the speed-test physics panel
   queue: [],  // { id, name, size, file, sent, total, status, chunks: [{idx, sent}], targetName? }
   // --- Incoming (desktop -> phone / phone -> phone via mesh) download state, keyed by transferId ---
   // { status: 'downloading'|'direct'|'error', sent, total, startedAt, lastAt, lastBytes, speed }
@@ -68,6 +70,78 @@ function authHeaders(extra = {}) {
 
 function randomDeviceId() {
   return 'phone-' + Array.from({length: 16}, () => Math.floor(Math.random() * 16).toString(16)).join('');
+}
+
+// ---------------------------------------------------------------------------
+// UNIVERSAL ERROR HANDLING — every network call goes through apiFetch, every
+// failure gets a human-readable reason + machine code. Nothing fails silently
+// anymore: the caller always receives {code, userMessage} and decides whether
+// to render it on a card, a toast, or the PC-unreachable banner.
+// ---------------------------------------------------------------------------
+const HTTP_ERROR_MESSAGES = {
+  401: 'Not paired anymore — scan the QR code again',
+  403: 'Declined on the PC',
+  404: 'Transfer not found on the PC',
+  408: 'The PC took too long to answer',
+  410: 'File is gone from the PC (moved or deleted?)',
+  500: 'PC internal error — try again',
+};
+
+function classifyApiError(err, status, body) {
+  if (status) {
+    const code = (body && body.code) || ('HTTP_' + status);
+    const serverMsg = body && body.error ? String(body.error) : '';
+    const userMessage = HTTP_ERROR_MESSAGES[status] || serverMsg || ('PC error ' + status);
+    return { code, userMessage, status };
+  }
+  // fetch() threw before/without a response: network down, DNS dead, abort.
+  const aborted = err && (err.name === 'AbortError' || /abort/i.test(String(err.message || '')));
+  return {
+    code: aborted ? 'E_TIMEOUT' : 'E_NETWORK',
+    userMessage: aborted
+      ? 'PC took too long to respond — Wi-Fi drop?'
+      : 'PC unreachable — check Wi-Fi and that the PC is awake',
+  };
+}
+
+/**
+ * fetch() + timeout + error classification. Resolves with the Response for
+ * 2xx; throws {code, userMessage, status} otherwise. NEVER a bare catch —
+ * the rejection always carries something displayable.
+ */
+async function apiFetch(url, opts = {}, timeoutMs = 8000) {
+  const ctl = new AbortController();
+  const tm = setTimeout(() => ctl.abort(), timeoutMs);
+  let res = null;
+  try {
+    res = await fetch(url, {
+      credentials: 'include',
+      ...opts,
+      headers: { ...authHeaders(), ...(opts.headers || {}) },
+      signal: ctl.signal,
+    });
+  } catch (err) {
+    clearTimeout(tm);
+    throw classifyApiError(err, 0, null);
+  }
+  clearTimeout(tm);
+  if (!res.ok) {
+    let body = null;
+    try { body = await res.json(); } catch {}
+    throw classifyApiError(null, res.status, body);
+  }
+  return res;
+}
+
+/** Best-effort fire-and-forget POST — logs failures, never throws. */
+async function apiPostQuiet(url, body) {
+  try {
+    await apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }, 6000);
+    return true;
+  } catch (err) {
+    console.warn('[lanbeam] POST failed:', url, err && err.userMessage);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +364,11 @@ async function pairWithToken(token) {
   try {
     const j = await r.json();
     if (j?.pairSecret) savePairSecret(j.pairSecret);
+    // Adopt the canonical identity so a re-scan never creates a second card.
+    if (j?.paired?.deviceId && j.paired.deviceId !== state.deviceId) {
+      state.deviceId = j.paired.deviceId;
+      try { localStorage.setItem('lanbeam:deviceId', state.deviceId); } catch {}
+    }
   } catch {}
   return true;
 }
@@ -476,11 +555,47 @@ function showLinkBanner(show) {
   document.body.appendChild(b);
 }
 
+// Presence stream: an open request the desktop watches. Closing the tab /
+// leaving the site kills the socket -> desktop sees "offline" instantly;
+// coming back reopens it -> "connected" instantly.
+function startPresence() {
+  if (state.presenceOn) return;
+  state.presenceOn = true;
+  let ctl = null;
+  const open = async () => {
+    ctl = new AbortController();
+    try {
+      const r = await fetch('/api/presence', { headers: authHeaders(), credentials: 'include', signal: ctl.signal, cache: 'no-store' });
+      if (!r.ok || !r.body) throw new Error('presence ' + r.status);
+      const rd = r.body.getReader();
+      while (!(await rd.read()).done) { /* keep-alive pings */ }
+    } catch {}
+    if (state.presenceOn) setTimeout(open, 1000);
+  };
+  open();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { try { ctl?.abort(); } catch {} } // fresh stream on return
+  });
+  window.addEventListener('pagehide', () => {
+    state.presenceOn = false;
+    try { ctl?.abort(); } catch {}
+    try { navigator.sendBeacon('/api/bye', new Blob([], { type: 'text/plain' })); } catch {}
+  });
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted || !state.presenceOn) { state.presenceOn = false; startPresence(); }
+  });
+}
+
 function startHeartbeat() {
+  startPresence();
   if (state.heartbeatTimer) return; // already running
   let fails = 0;
   let timer = null;
   const beat = async () => {
+    // While a transfer/test owns the connection budget, skip the beat — the
+    // active lane/upload requests keep server-side presence alive by
+    // themselves (the PC counts any authenticated request as proof of life).
+    if (netBusy()) { timer = setTimeout(beat, 5000); state.heartbeatTimer = timer; return; }
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 6000);
     try {
@@ -891,6 +1006,193 @@ function commitFiles(files, target, keepCopy) {
   pump();
 }
 
+// ---------------------------------------------------------------------------
+// LAN speed test — lives in its OWN view (footer link → #st-view), out of the
+// transfer flow. Phase 1: ONE stream = the small-file path. Phase 2: FIVE
+// parallel range lanes = exactly what large PC→phone sends use now (same
+// lane engine as streamDownload). Same measurement as the real thing.
+// ---------------------------------------------------------------------------
+let _stRunning = false;
+let _stViewOpen = false;
+
+function bindSpeedTest() {
+  const btn = document.getElementById('st-run');
+  if (btn && !btn.dataset.stBound) {
+    btn.dataset.stBound = '1';
+    btn.addEventListener('click', runPhoneSpeedTest);
+  }
+  // View navigation: footer link opens, back button / hardware back closes.
+  const open = document.getElementById('st-open');
+  const back = document.getElementById('st-back');
+  const view = document.getElementById('st-view');
+  const main = document.getElementById('main-view');
+  if (open && view && main && !open.dataset.stNavBound) {
+    open.dataset.stNavBound = '1';
+    open.addEventListener('click', () => {
+      if (_stViewOpen) return;
+      _stViewOpen = true;
+      main.hidden = true;
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      try { history.pushState({ stView: true }, ''); } catch {}
+    });
+  }
+  if (back && view && main && !back.dataset.stNavBound) {
+    back.dataset.stNavBound = '1';
+    back.addEventListener('click', () => {
+      // If this open pushed a history entry, pop it — popstate closes the
+      // view. Otherwise (e.g. state was lost) close directly.
+      if (history.state && history.state.stView) history.back();
+      else closeSpeedTestView();
+    });
+  }
+  if (!window._stPopBound) {
+    window._stPopBound = true;
+    window.addEventListener('popstate', () => { if (_stViewOpen) closeSpeedTestView(); });
+  }
+}
+
+function closeSpeedTestView() {
+  if (!_stViewOpen) return;
+  _stViewOpen = false;
+  const view = document.getElementById('st-view');
+  const main = document.getElementById('main-view');
+  if (view) view.hidden = true;
+  if (main) main.hidden = false;
+}
+
+/** Count the bytes of a response. Prefers arrayBuffer() — one C++-side
+ *  accumulation — because per-chunk reader.read() promises cost ~0.3ms each
+ *  (≈500 JS round trips for 32MB): on fast links that tax becomes the
+ *  measured number instead of the link. The reader loop stays as a fallback
+ *  for bodies without arrayBuffer (none known in practice). */
+async function countStreamBytes(res) {
+  if (typeof res.arrayBuffer === 'function') {
+    return (await res.arrayBuffer()).byteLength;
+  }
+  const reader = res.body.getReader();
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+  }
+  return n;
+}
+
+async function runPhoneSpeedTest() {
+  if (_stRunning) return;
+  const btn = document.getElementById('st-run');
+  const out = document.getElementById('st-result');
+  if (!btn || !out) return;
+  if (!state.paired) { toast('Pair with the PC first'); return; }
+  _stRunning = true;
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  out.hidden = false;
+  out.innerHTML = '<span class="st-line">Measuring single stream…</span>';
+  holdWakeLock();
+  try {
+    const TOTAL = 32 * 1024 * 1024;
+    const mbps = (bytes, ms) => Math.round((bytes * 8) / (ms / 1000) / 1e6);
+
+    // Phase 1 — single stream (small-file path).
+    let t = performance.now();
+    const r1 = await apiFetch(`/api/speedtest?bytes=${TOTAL}`, {}, 60000);
+    if (!r1.ok) throw new Error('HTTP ' + r1.status);
+    const n1 = await countStreamBytes(r1);
+    const d1 = performance.now() - t;
+    if (n1 !== TOTAL) throw new Error(`received ${n1} of ${TOTAL} bytes`);
+
+    // Phase 2 — parallel lanes, each a byte-range slice of the same 32MB.
+    // Same engine large PC→phone sends use (see streamDownload), including
+    // dual-origin sharding: when the PC answers on a second address, the
+    // browser gives that origin its own 6-connection pool — 12 lanes total.
+    // Every background poll is paused for the whole test (netBusy() guard)
+    // so the full connection budget is lanes — none spent on polling.
+    const origins = laneOrigins();
+    const LANES = origins.length * 6;
+    out.innerHTML = `<span class="st-line">Measuring ${LANES} parallel lanes…</span>`;
+    await new Promise(r => setTimeout(r, 250));
+    const lane = Math.ceil(TOTAL / LANES);
+    t = performance.now();
+    const counts = await Promise.all(Array.from({ length: LANES }, async (_, i) => {
+      const s = i * lane;
+      const e = Math.min(TOTAL, s + lane) - 1;
+      const useAlt = origins.length > 1 && (i % 2 === 1);
+      let r;
+      try {
+        r = await laneRequest(`/api/speedtest?bytes=${TOTAL}`, useAlt, `bytes=${s}-${e}`);
+      } catch (err) {
+        // Alternate address not resolving on this phone — reroute the lane
+        // to the primary origin once, then let normal errors propagate.
+        if (!useAlt) throw err;
+        r = await laneRequest(`/api/speedtest?bytes=${TOTAL}`, false, `bytes=${s}-${e}`);
+      }
+      if (r.status !== 206 && !r.ok) throw new Error('lane HTTP ' + r.status);
+      return countStreamBytes(r);
+    }));
+    const d2 = performance.now() - t;
+    const n2 = counts.reduce((a, b) => a + b, 0);
+    if (n2 !== TOTAL) throw new Error(`lanes received ${n2} of ${TOTAL} bytes`);
+
+    const s1 = mbps(n1, d1), sL = mbps(n2, d2);
+    const boost = s1 > 0 ? sL / s1 : 0;
+    const laneWord = LANES > 6 ? '12 lanes' : '6 lanes';
+
+    // ---- Classify the limit: excellent, connection-bound, or radio-bound ----
+    let verdict;
+    if (sL >= 600) verdict = 'Excellent — large sends already run at this speed.';
+    else if (boost < 0.85) verdict = 'This link is already faster than the phone can pull through the browser — transfers run at the practical ceiling for this phone. More Wi-Fi headroom or more lanes won\'t raise it further here.';
+    else if (boost >= 1.4) verdict = `Lanes pay off here: ×${boost.toFixed(1)} over one stream. This link is connection-limited, and the ${laneWord} path is what unlocks it.`;
+    else if (s1 < 100) verdict = 'The link itself is weak — signal, band or distance. Parallelism cannot fix the radio.';
+    else verdict = 'Lanes land close to the single stream: the radio, not the connection count, is the limit. The levers below change that number — code cannot push past physics.';
+
+    // ---- The honest physics of "800 Mbps" ----
+    // Wi-Fi rates shown in settings are theoretical PHY numbers; real TCP
+    // gets roughly half of that over ONE air hop. If the PC is ALSO on Wi-Fi,
+    // every byte crosses the air TWICE (PC↔router↔phone) sharing the same
+    // airtime, so the realistic ceiling is about a QUARTER of the link rate.
+    const w = state.pcWifi;
+    const pcBits = [
+      w && w.connected ? 'PC on Wi-Fi' : 'PC wired',
+      w && w.generation && w.generation !== 'Unknown' ? w.generation : '',
+      w && w.band ? w.band : '',
+      w && w.channel ? 'ch ' + w.channel : '',
+      w && w.phyRateMbps ? w.phyRateMbps + ' Mbps' : '',
+    ].filter(Boolean).join(' · ');
+    const ceilingNote = (w && w.connected)
+      ? 'Both ends are on Wi-Fi: every byte crosses the air twice (PC↔router↔phone), so the realistic ceiling is roughly a QUARTER of the link rate — on an "800 Mbps" link that is ~200 Mbps. Wiring the PC into the router is the single biggest upgrade (~2×).'
+      : 'The PC is wired, so there is only one air hop: the realistic ceiling is roughly HALF the phone\'s Wi-Fi link rate. The number in Wi-Fi settings is a theoretical PHY rate, not TCP speed.';
+    const bandWarning = (w && w.connected && w.band === '2.4GHz')
+      ? 'The PC is on the 2.4 GHz band — switch it to 5 GHz. No software can push high speeds through 2.4 GHz.'
+      : '';
+    out.innerHTML = `
+      <div class="st-nums">
+        <div class="st-num"><b>${s1}</b><span>Mbps · single</span></div>
+        <div class="st-num"><b>${sL}</b><span>Mbps · ${laneWord}</span></div>
+        <div class="st-num"><b>×${boost.toFixed(1)}</b><span>boost</span></div>
+      </div>
+      <p class="st-verdict">${escapeHtml(verdict)}</p>
+      <p class="st-sub">${escapeHtml(pcBits)}</p>
+      <p class="st-sub">${escapeHtml(ceilingNote)}</p>
+      ${bandWarning ? `<p class="st-line st-err">${escapeHtml(bandWarning)}</p>` : ''}
+    `;
+    // User navigated back mid-test: deliver the headline number anyway.
+    if (!_stViewOpen) toast(`Speed test — ${s1} Mbps single · ${sL} Mbps ${laneWord}`);
+  } catch (err) {
+    out.innerHTML = `<span class="st-line st-err">Speed test failed — ${escapeHtml((err && (err.userMessage || err.message)) || String(err))}</span>`;
+    if (!_stViewOpen) toast('Speed test failed — ' + ((err && (err.userMessage || err.message)) || 'network error'));
+  } finally {
+    _stRunning = false;
+    btn.disabled = false;
+    btn.textContent = 'Run speed test';
+    if (![...state.downloads.values()].some(d => d.status === 'downloading' || d.status === 'direct' || d.status === 'connecting')) {
+      releaseWakeLock();
+    }
+  }
+}
+
 function bindSheet() {
   const backdrop = document.getElementById('sheet-backdrop');
   if (!backdrop || backdrop.dataset.sheetBound) return;
@@ -980,11 +1282,15 @@ function renderQueue() {
 // ---------------------------------------------------------------------------
 // Sender: build manifest locally, then push chunks in parallel.
 // ---------------------------------------------------------------------------
-function xhrUpload(url, headers, body, onProgress) {
+// One chunk POST. crossOrigin=true targets the PC's second address: cookies
+// are omitted (the server's CORS is wildcard, which forbids credentialed
+// replies) and authentication rides on the X-Device-Id / X-Pair-Secret
+// headers — the same carrier the lane-download engine already uses.
+function xhrUpload(url, headers, body, onProgress, crossOrigin) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
     x.open('POST', url);
-    x.withCredentials = true;
+    x.withCredentials = !crossOrigin;
     for (const k in headers) x.setRequestHeader(k, headers[k]);
     // Stall watchdog: a jammed Wi-Fi link can hang a socket forever. If no
     // bytes move for 25s, abort so the caller's retry opens a fresh connection.
@@ -1014,6 +1320,7 @@ async function pump() {
   next.phase = '';
   renderQueue();
   holdWakeLock();
+  _pumpBusy = true;
 
   try {
     // Build a manifest (chunk size, count, per-chunk SHA-like fingerprint using
@@ -1084,7 +1391,11 @@ async function pump() {
       if (sr.ok) { const sj = await sr.json(); for (const i of (sj.received || [])) have.add(i); }
     } catch {}
 
-    // Pump chunks in parallel — up to maxParallelStreams concurrent fetches.
+    // Use a single, reliable origin. Mobile hotspots choke when spraying
+    // chunks across multiple addresses/hostnames (mDNS timeouts, radio congestion).
+    // 3 parallel workers on a single origin is the proven sweet spot for mobile Wi-Fi:
+    // saturates the link without bufferbloat or TCP packet collisions.
+    const maxConns = 3;
     let nextIdx = 0;
     next.doneBytes = 0;
     for (const i of have) if (chunks[i]) next.doneBytes += chunks[i].length;
@@ -1096,27 +1407,27 @@ async function pump() {
       const t = Date.now();
       if (t - _lastR > 100) { _lastR = t; renderQueue(); }
     };
-    const workers = Array.from({ length: Math.min(state.maxParallelStreams, totalChunks) }, async () => {
+    const chunkPath = `/api/transfer/${transferId}/chunk`;
+    const workers = Array.from({ length: Math.max(1, Math.min(maxConns, totalChunks)) }, async () => {
       while (true) {
         const idx = nextIdx++;
         if (idx >= totalChunks) break;
         if (have.has(idx)) continue;
         const chunk = chunks[idx];
         const blob = next.file.slice(chunk.offset, chunk.offset + chunk.length);
-        const buf = await blob.arrayBuffer();
         let status = 0, tries = 0;
         while (true) {
           try {
-            status = await xhrUpload(`/api/transfer/${transferId}/chunk`, authHeaders({
+            status = await xhrUpload(chunkPath, authHeaders({
               'Content-Type': 'application/octet-stream',
               'X-Chunk-Index': String(idx),
               'X-Compressed': chunk.compressed ? '1' : '0',
-            }), buf, (loaded) => { inflight[idx] = loaded; paint(); });
+            }), blob, (loaded) => { inflight[idx] = loaded; paint(); }, false);
             break;
           } catch (e) {
             delete inflight[idx];
-            if (++tries >= 8) throw e;
-            await new Promise(r => setTimeout(r, Math.min(5000, 400 * tries * tries)));
+            if (++tries >= 5) throw e;
+            await new Promise(r => setTimeout(r, Math.min(3000, 300 * tries * tries)));
           }
         }
         delete inflight[idx];
@@ -1161,6 +1472,7 @@ async function pump() {
     toast('Send issue: ' + ((err && err.message) || 'unknown'));
   } finally {
     next.running = false;
+    _pumpBusy = false;
     pump();  // start next queued file
   }
 }
@@ -1191,7 +1503,11 @@ function applyServerTruth(q, s) {
 }
 let _syncBusy = false;
 async function syncQueue() {
-  if (_syncBusy || !state.paired) return;
+  // Paused while a transfer/test is active — each 1.2s poll would steal one
+  // of the 6 per-host connections the active upload needs. Progress for the
+  // in-flight file is painted locally (xhrUpload onprogress), so the card
+  // stays live; this sync resumes the moment the transfer ends.
+  if (_syncBusy || !state.paired || netBusy()) return;
   const items = state.queue.filter(q => !FINAL_STATES.has(q.status));
   if (!items.length) return;
   _syncBusy = true;
@@ -1344,6 +1660,26 @@ async function refreshFooter() {
     if (j.links?.permanent) {
       try { localStorage.setItem('lanbeam:homeUrl', j.links.permanent); } catch {}
     }
+    // Dual-origin lane sharding: the same PC usually answers on TWO
+    // addresses (mDNS hostname + LAN IP). Browsers key the 6-connection
+    // HTTP/1.1 pool per ORIGIN, so a second host string for the same server
+    // opens a SECOND pool: 12 parallel lanes instead of 6. Remember
+    // whichever address this page is NOT served from — the mDNS name keeps
+    // working across DHCP renewals; the raw IP works when mDNS is blocked.
+    // Also keep the PC's live radio state for the speed-test physics panel.
+    state.pcWifi = j.wifi || null;
+    if (j.links) {
+      const here = location.origin;
+      let alt = '';
+      for (const c of [j.links.permanent, j.links.ip]) {
+        if (!c) continue;
+        try {
+          const u = new URL(c);
+          if ((u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== here) { alt = u.origin; break; }
+        } catch {}
+      }
+      state.altOrigin = alt;
+    }
     const el = document.getElementById('wifi-info');
     if (el) el.textContent = buildFooterText(j.wifi);
   } catch {} finally { clearTimeout(_ft); _footBusy = false; }
@@ -1371,6 +1707,7 @@ function registerServiceWorker() {
   await detectTransport();
   bindPicker();
   bindSheet();
+  bindSpeedTest();
   registerServiceWorker();
   restoreUploads();
   refreshFooter();
@@ -1383,10 +1720,11 @@ function registerServiceWorker() {
     if (document.visibilityState === 'visible') {
       // If the phone was closed mid-download, the OS download manager may have
       // been interrupted. Clear 'direct' status downloads from the autoStarted
-      // ledger so the next poll re-triggers directDownload() for them.
+      // ledger so the next poll re-triggers directDownload() for them. Verify
+      // loops are stopped too — a fresh startDownload() re-establishes them.
       for (const [tid, dl] of state.downloads) {
         if (dl.status === 'direct') {
-          // Reset: let autoReceiveTick re-fire directDownload for these entries
+          stopVerifyLoop(tid);
           state.downloads.delete(tid);
           state.autoStarted.delete(tid);
         }
@@ -1421,7 +1759,13 @@ function registerServiceWorker() {
 //     buffered fully in RAM) and direct downloads are staggered so browsers
 //     never see a burst of automatic downloads.
 // ---------------------------------------------------------------------------
-const STREAM_SAVE_LIMIT = 700 * 1024 * 1024; // above this, use the system downloader (memory safety)
+// In-page streaming buffers the whole file as a Blob in RAM. iOS Safari
+// reliably kills the tab somewhere past ~200-300 MB of live blob memory, so
+// the closed-loop stream path is capped conservatively — bigger files go to
+// the OS download manager (streams straight to disk) + the /dlstatus
+// verification loop. Reliability first: a crashed tab is the one failure we
+// can't recover from.
+const STREAM_SAVE_LIMIT = 200 * 1024 * 1024;
 const DOWNLOAD_MIME_FALLBACK = 'application/octet-stream';
 
 const DOWNLOAD_EXT_MIME = {
@@ -1455,19 +1799,43 @@ function canStreamInPage() {
 }
 
 let _pollBusy = false;
+let _pollFails = 0; // consecutive poll failures — drives the PC-unreachable banner
+
+/** Persistent "PC unreachable" banner — shown after ~4.5s of dead polls,
+ *  hidden the moment any poll succeeds. This is what used to be the
+ *  invisible failure: pending list just stopped updating, no explanation. */
+function updatePcBanner(reachable) {
+  let el = document.getElementById('pc-unreachable');
+  if (reachable) {
+    if (el) el.remove();
+    return;
+  }
+  // Bytes are flowing right now (lane/single stream or system download) —
+  // the PC is reachable BY DEFINITION. A poll can queue for a moment behind
+  // transfer connections; that must not paint a false "PC unreachable".
+  const transferring = [...state.downloads.values()].some(d => d.status === 'downloading' || d.status === 'direct' || d.status === 'connecting');
+  if (transferring) return;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'pc-unreachable';
+    el.innerHTML = '\u26a0\ufe0f <b>PC unreachable</b> — check Wi-Fi and that the PC is awake. Transfers resume automatically when the link returns.';
+    const host = document.querySelector('.app') || document.body;
+    host.prepend(el);
+  }
+}
+
 async function checkIncomingTransfers() {
   if (!state.paired || _pollBusy) return; // never stack polls on a jammed link
+  // While a speed test, lane download or upload pump owns the connection
+  // budget, polling pauses — every connection not spent polling is another
+  // full-speed lane. Callers resume the poll themselves the moment they finish.
+  if (netBusy()) return;
   _pollBusy = true;
-  const _ctl = new AbortController();
-  const _tm = setTimeout(() => _ctl.abort(), 5000);
   try {
-    const res = await fetch('/api/transfer/pending', {
-      headers: authHeaders(),
-      credentials: 'include',
-      signal: _ctl.signal,
-    });
-    if (!res.ok) return;
+    const res = await apiFetch('/api/transfer/pending', {}, 5000);
     const data = await res.json();
+    _pollFails = 0;
+    updatePcBanner(true);
     state.pendingTransfers = data.transfers || [];
     // Expire "Saved ✓" flash rows.
     const now = Date.now();
@@ -1481,17 +1849,33 @@ async function checkIncomingTransfers() {
         state.autoStarted.delete(tid);
       }
     }
-    // Native downloads keep running after the browser closes; the PC drops the
-    // entry when it has served the whole file — that's our "saved" signal.
+    // Backstop for phones that never ran the verify loop (old-PC inference):
+    // a system download whose entry vanished from pending = PC served it.
     for (const [tid, dl] of [...state.downloads]) {
-      if (dl.status === 'direct' && !live.has(tid)) {
+      if (dl.status === 'direct' && !live.has(tid) && !dlVerifyLoops.has(tid)) {
         state.downloads.delete(tid);
         state.recentlySaved.set(tid, { expiresAt: Date.now() + 8000, name: dl.name || 'File', size: dl.total || 0 });
       }
     }
     renderReceivedList();
     autoReceiveTick();
-  } catch {} finally { clearTimeout(_tm); _pollBusy = false; }
+  } catch (err) {
+    _pollFails++;
+    updatePcBanner(false);
+    // 401 = pairing really revoked → wipe the secret and fall back to the QR
+    // screen instead of polling a dead session forever.
+    if (err && err.status === 401) {
+      clearPairSecret();
+      state.paired = false;
+      tryPair();
+      return;
+    }
+    if (_pollFails >= 3 && _pollFails % 10 === 3) {
+      // Re-state the problem once a minute while the link stays dead — not
+      // every 1.5s poll, that would be toast spam.
+      toast('\u26a0\ufe0f ' + (err.userMessage || 'PC unreachable'));
+    }
+  } finally { _pollBusy = false; }
 }
 
 // Auto-receive: start downloading pending transfers WITHOUT waiting for a
@@ -1515,30 +1899,38 @@ function receivedRowHtml(t) {
   const dl = state.downloads.get(t.transferId);
   const status = dl ? dl.status : 'idle';
   const pct = dl && t.fileSize > 0 ? Math.min(100, (dl.sent / t.fileSize) * 100) : 0;
-  const busy = status === 'downloading' || status === 'direct';
+  const busy = status === 'downloading' || status === 'direct' || status === 'connecting';
+  const failed = status === 'error';
   const attempted = state.autoStarted.has(t.transferId);
   // Zero button chrome on the automatic path — receiving just happens:
-  //   queued/receiving/saving rows show a status badge, never a button.
-  //   The ONLY tappable controls are the tiny "Retry" link after a real
-  //   failure (one auto attempt per transfer, never a loop) and the small
-  //   "save again" link on a freshly saved row (browser blocked the save).
+  //   queued/connecting/receiving/saving rows show a status badge, never a
+  //   button. The ONLY tappable controls are the "Retry" link after a REAL
+  //   failure — now always with the reason spelled out — and the small
+  //   "save again" link on a freshly saved row.
   const action = busy
-    ? `<span class="badge receiving">${status === 'direct' ? 'Saving…' : 'Receiving…'}</span>`
-    : attempted
-      ? `<button class="resave-link" data-receive-action="save" data-tid="${escapeHtml(t.transferId)}">Retry</button>`
-      : `<span class="badge queued">Queued</span>`;
+    ? `<span class="badge receiving">${status === 'direct' ? 'Saving…' : status === 'connecting' ? 'Connecting…' : 'Receiving…'}</span>`
+    : failed
+      ? `<span class="badge failed">failed</span><button class="resave-link" data-receive-action="save" data-tid="${escapeHtml(t.transferId)}">Retry</button>`
+      : attempted
+        ? `<button class="resave-link" data-receive-action="save" data-tid="${escapeHtml(t.transferId)}">Retry</button>`
+        : `<span class="badge queued">Queued</span>`;
   const progressHtml = busy ? `
       <div class="bar"><div class="fill" style="width:${pct.toFixed(1)}%"></div></div>
       <div class="recv-status">
         <span>${status === 'direct'
-          ? 'Saving via system download manager — check the notification shade'
-          : (dl.sent > 0 ? `Receiving — ${formatBytes(dl.sent)} / ${formatBytes(t.fileSize)}${speedLabelFor(dl.speed)}` : 'Connecting to PC · preparing first data…')}</span>
+          ? (dl.phase
+              ? escapeHtml(dl.phase)
+              : 'Saving via system download manager — check the notification shade')
+          : status === 'connecting'
+            ? (dl.phase ? escapeHtml(dl.phase) : 'Connecting to PC · checking the file…')
+            : (dl.sent > 0 ? `Receiving — ${formatBytes(dl.sent)} / ${formatBytes(t.fileSize)}${speedLabelFor(dl.speed)}` : 'Connecting to PC · preparing first data…')}</span>
         <span class="meta-pct">${pct.toFixed(0)}%</span>
-      </div>` : '';
+      </div>` : (failed ? `
+      <div class="recv-error">\u26a0\ufe0f ${escapeHtml(dl.error || 'Download failed')}</div>` : '');
   return `
-    <div class="file-row received-row ${busy ? 'is-busy' : ''}">
+    <div class="file-row received-row ${busy ? 'is-busy' : ''} ${failed ? 'is-failed' : ''}">
       <div class="file-row-row" style="flex:1; min-width:0;">
-        <div class="file-icon ${busy ? 'active' : ''}">${ICONS.file}</div>
+        <div class="file-icon ${busy ? 'active' : ''} ${failed ? 'err' : ''}">${ICONS.file}</div>
         <div class="text">
           <div class="name">${escapeHtml(t.fileName)}</div>
           <div class="meta">
@@ -1622,44 +2014,250 @@ document.getElementById('received-list')?.addEventListener('click', (e) => {
 
 async function startDownload(t) {
   const tid = t.transferId;
-  if (state.downloads.has(tid)) return; // already running
-  state.downloads.set(tid, {
-    status: 'downloading', sent: 0, total: t.fileSize,
+  if (state.downloads.has(tid)) {
+    const prev = state.downloads.get(tid);
+    // A prior attempt ended in a VISIBLE error — allow the Retry tap to
+    // restart cleanly (this used to early-return and swallow the tap).
+    if (prev.status !== 'error') return; // genuinely still running
+    state.downloads.delete(tid);
+  }
+  const dl = {
+    status: 'connecting', sent: 0, total: t.fileSize,
     startedAt: Date.now(), lastAt: Date.now(), lastBytes: 0, speed: 0,
-  });
+    error: null, retries: 0, phase: '',
+  };
+  state.downloads.set(tid, dl);
   renderReceivedSoon();
+  holdWakeLock(); // screen must not sleep mid-download on mobile
+
+  // The signed link from /api/transfer/pending — authenticates the download
+  // click without cookies AND works as a pre-flight URL. Fallback to the
+  // plain path (headers auth) for entries from an older PC build.
+  const dlUrl = t.downloadUrl || `/api/transfer/${tid}/file`;
+
   try {
-    // Name lookup runs IN PARALLEL with the file request (no serial round trip).
+    // ── 1. PRE-FLIGHT — fail LOUDLY before any click happens. ────────────
+    // This is where the old code went silent: if auth was dead or the file
+    // was gone, the <a> click downloaded a JSON error body as a "file", or
+    // nothing at all. Now we KNOW before we click.
+    try {
+      await apiFetch(dlUrl, { method: 'HEAD' }, 8000);
+    } catch (err) {
+      dl.status = 'error';
+      dl.error = err.userMessage || 'Could not reach the file on the PC';
+      if (err.status === 401) {
+        // Session really is dead — try one silent re-hello before giving up;
+        // if that works the Retry tap will go through cleanly.
+        try { await silentHello(); } catch {}
+      }
+      renderReceivedSoon();
+      toast('\u26a0\ufe0f ' + (t.fileName || 'File') + ': ' + dl.error);
+      return;
+    }
+
+    // Resolve the true filename in parallel with the data transfer.
     const namePromise = (async () => {
       let fileName = t.fileName;
       try {
-        const mRes = await fetch(`/api/transfer/${tid}/manifest`, { headers: authHeaders(), credentials: 'include' });
-        if (mRes.ok) {
-          const m = await mRes.json();
-          if (m.fileName) fileName = String(m.fileName).split(/[\\/]/).pop() || m.fileName;
-        }
+        const mRes = await apiFetch(`/api/transfer/${tid}/manifest`, {}, 6000);
+        const m = await mRes.json();
+        if (m.fileName) fileName = String(m.fileName).split(/[\\/]/).pop() || m.fileName;
       } catch {}
       return fileName;
     })();
-    let fileName = t.fileName;
+    // Stash the resolved name on the row so markSaved() and the backstop
+    // inference both show the true filename.
+    namePromise.then(n => { const c = state.downloads.get(tid); if (c && n) c.name = n; }).catch(() => {});
 
-    const size = state.downloads.get(tid).total || t.fileSize;
-    {
-      // Native download manager for every file: it keeps running after the
-      // browser is closed. The server sends Content-Type + Content-Disposition
-      // so the real filename and extension survive.
-      fileName = await namePromise;
-      directDownload(tid);
-      Object.assign(state.downloads.get(tid), { status: 'direct', name: fileName });
+    // ── 2. PATH CHOICE ─────────────────────────────────────────────────
+    // Small/medium file + capable browser → IN-PAGE STREAM: fully closed
+    // loop, exact progress, retryable, and the saved blob is re-offerable
+    // ("save again") if the OS save dialog was dismissed. This path used to
+    // be dead code — everything went through the blind <a> click.
+    const canStream = canStreamInPage() && (t.fileSize || 0) <= STREAM_SAVE_LIMIT;
+    if (canStream) {
+      dl.status = 'downloading';
       renderReceivedSoon();
-      toast('Download started — check the notification shade');
+      try {
+        const url = await streamDownload(tid, namePromise, t.fileSize, dlUrl);
+        markSaved(tid, namePromise, url);
+        return;
+      } catch (err) {
+        // Stream died (tab freeze, memory, Wi-Fi) — DON'T hide it: say what
+        // happened, then hand the file to the OS download manager as fallback.
+        console.warn('[lanbeam] stream download failed, falling back to system downloader:', err);
+        dl.phase = 'In-page receive failed (' + ((err && err.userMessage) || err.message || 'network') + ') — using system downloader';
+        dl.sent = 0;
+        dl.status = 'connecting';
+        renderReceivedSoon();
+      }
     }
+
+    // ── 3. SYSTEM DOWNLOAD MANAGER + VERIFICATION LOOP ──────────────────
+    // The <a> click hands off to the OS — JS can't see it. But the SERVER
+    // can: we poll /dlstatus and mirror what it observed. Dead clicks,
+    // interrupted downloads and vanished entries all become visible states.
+    dl.status = 'direct';
+    dl.sent = 0;
     renderReceivedSoon();
+    directDownload(dlUrl);
+    verifyDirectDownload(tid, t, namePromise, dlUrl);
   } catch (err) {
     console.error('[lanbeam] download failed:', err);
-    state.downloads.delete(tid); // "Retry" link returns so the user can retry
+    dl.status = 'error';
+    dl.error = (err && (err.userMessage || err.message)) || 'Download failed';
     renderReceivedSoon();
-    toast('Download failed: ' + err.message);
+    toast('Download failed: ' + dl.error);
+  }
+}
+
+/**
+ * Server-truth verification loop for system-manager downloads. Polls
+ * /api/transfer/:id/dlstatus every 2s and drives the row UI:
+ *   active      → live progress from bytes the server actually served
+ *   complete    → mark saved + ack (entry removal is the PC's job)
+ *   interrupted → auto re-click (OS download manager resumes via Range)
+ *   offered     (nothing ever started) → after 15s, “browser blocked the
+ *                 download — tap Retry” (the tap supplies the missing user
+ *                 gesture most blocked downloads were waiting for)
+ *   gone        → saved if we saw bytes flow, error otherwise
+ */
+const dlVerifyLoops = new Map(); // tid -> {stop, lastState, sawBytes}
+function verifyDirectDownload(tid, t, namePromise, dlUrl) {
+  stopVerifyLoop(tid);
+  const dl = state.downloads.get(tid);
+  if (!dl) return;
+  const clickedAt = Date.now();
+  let sawBytes = 0;
+  const loop = { stop: false, lastState: '', sawBytes: 0 };
+  dlVerifyLoops.set(tid, loop);
+
+  (async function tick() {
+    if (loop.stop) return;
+    const cur = state.downloads.get(tid);
+    if (!cur || cur.status === 'error' || cur.status === 'saved') { dlVerifyLoops.delete(tid); return; }
+    let st = null;
+    try {
+      const r = await apiFetch(`/api/transfer/${tid}/dlstatus`, {}, 6000);
+      st = await r.json();
+    } catch (err) {
+      // OLD PC BUILD (no /dlstatus endpoint): a 404 here is NOT a download
+      // failure — stop the verify loop and let the legacy inference in
+      // checkIncomingTransfers ("entry vanished from pending = served") take
+      // over. Never punish the user for a version mismatch.
+      if (err && err.status === 404) { dlVerifyLoops.delete(tid); return; }
+      // Session revoked mid-download — the global 401 path in
+      // checkIncomingTransfers already wipes the secret and re-pairs; running
+      // this loop against a dead session is pointless.
+      if (err && err.status === 401) { dlVerifyLoops.delete(tid); return; }
+      // Poll failing (Wi-Fi blip / PC asleep): keep the loop alive briefly;
+      // only surface as an error after ~20s of total silence.
+      if (Date.now() - clickedAt > 20000 && !loop.sawBytes) {
+        cur.status = 'error';
+        cur.error = err.userMessage || 'Lost the PC during download';
+        renderReceivedSoon();
+        dlVerifyLoops.delete(tid);
+        toast('\u26a0\ufe0f ' + (t.fileName || 'File') + ': ' + cur.error);
+        apiPostQuiet(`/api/transfer/${tid}/dlfailed`, { reason: err.code || 'network' });
+      } else {
+        setTimeout(tick, 2000);
+      }
+      return;
+    }
+    loop.lastState = st.state;
+    loop.sawBytes = Math.max(loop.sawBytes, st.bytes || 0);
+
+    if (st.state === 'complete') {
+      markSaved(tid, namePromise);
+      dlVerifyLoops.delete(tid);
+      return;
+    }
+    if (st.state === 'gone') {
+      if (loop.sawBytes > 0 || (st.idleMs || 0) < 120000) {
+        // Entry dropped right after full serve (old-PC inference path) — the
+        // server considers it delivered.
+        markSaved(tid, namePromise);
+      } else {
+        cur.status = 'error';
+        cur.error = 'Transfer is no longer on the PC';
+        renderReceivedSoon();
+      }
+      dlVerifyLoops.delete(tid);
+      return;
+    }
+    if (st.state === 'active') {
+      cur.status = 'direct';
+      cur.phase = '';
+      if (st.total > 0) cur.sent = Math.min(st.total, st.bytes || 0);
+      updateDownloadProgress(tid, cur.sent);
+      setTimeout(tick, 2000);
+      return;
+    }
+    if (st.state === 'interrupted') {
+      // Server saw a partial transfer and no live connection. The OS
+      // download manager may resume on its own — re-trigger the click a few
+      // times (Range resume keeps it cheap), then escalate to a tappable
+      // Retry with the reason spelled out.
+      cur.sent = st.bytes || cur.sent;
+      if (cur.retries < 3) {
+        cur.retries++;
+        cur.phase = 'Interrupted at ' + formatBytes(st.bytes || 0) + ' — resuming… (attempt ' + cur.retries + '/3)';
+        renderReceivedSoon();
+        directDownload(dlUrl);
+        setTimeout(tick, 3000);
+      } else {
+        cur.status = 'error';
+        cur.error = 'Download kept interrupting — check Wi-Fi, then tap Retry';
+        renderReceivedSoon();
+        toast('\u26a0\ufe0f ' + (t.fileName || 'File') + ': ' + cur.error);
+        apiPostQuiet(`/api/transfer/${tid}/dlfailed`, { reason: 'interrupted' });
+      }
+      return;
+    }
+    // st.state === 'offered' — server never saw a single byte. The click was
+    // most likely swallowed (blocked without gesture / webview).
+    if (Date.now() - clickedAt > 15000) {
+      cur.status = 'error';
+      cur.error = 'Browser blocked the automatic download — tap Retry';
+      renderReceivedSoon();
+      toast('\u26a0\ufe0f ' + (t.fileName || 'File') + ': ' + cur.error);
+      return;
+    }
+    setTimeout(tick, 2000);
+  })();
+}
+
+function stopVerifyLoop(tid) {
+  const loop = dlVerifyLoops.get(tid);
+  if (loop) loop.stop = true;
+  dlVerifyLoops.delete(tid);
+}
+
+/** Flip a row to “saved”, ack the PC, and show the save-again escape hatch. */
+function markSaved(tid, namePromise, blobUrl) {
+  stopVerifyLoop(tid);
+  const dl = state.downloads.get(tid);
+  const name = (dl && dl.name) || null;
+  const size = (dl && dl.total) || 0;
+  state.downloads.delete(tid);
+  state.recentlySaved.set(tid, {
+    expiresAt: Date.now() + 8000,
+    name: name || (namePromise ? null : 'File'),
+    size, url: blobUrl,
+  });
+  // Resolve the name asynchronously if it wasn't fixed yet.
+  if (namePromise && !name) {
+    namePromise.then(n => {
+      const info = state.recentlySaved.get(tid);
+      if (info) { info.name = n; renderReceivedSoon(); }
+    }).catch(() => {});
+  }
+  renderReceivedSoon();
+  toast('\u2705 ' + (name || 'File') + ' saved');
+  // Tell the PC it can drop the entry now (cancels its grace timer).
+  apiPostQuiet(`/api/transfer/${tid}/ack`);
+  if (![...state.downloads.values()].some(d => d.status === 'downloading' || d.status === 'direct' || d.status === 'connecting')) {
+    releaseWakeLock();
   }
 }
 
@@ -1677,13 +2275,100 @@ function updateDownloadProgress(tid, sent) {
   renderReceivedSoon();
 }
 
-// Stream the whole file over ONE request with exact in-page progress.
-async function streamDownload(tid, namePromise, totalSize) {
-  const res = await fetch(`/api/transfer/${tid}/file`, {
+// ---------------------------------------------------------------------------
+// PC→phone download engine.
+//
+// LARGE files (≥ LANE_MIN_SIZE) are pulled through the LANE MATRIX: the file
+// is split into LANE_COUNT byte-range slices fetched in PARALLEL. One TCP
+// stream rarely fills a Wi-Fi 5 link (loss recovery stalls a single
+// congestion window); parallel streams together recover the full air rate,
+// and each lane that hits turbulence resumes from its exact byte position
+// instead of killing the whole download.
+//
+// Each origin gets LANE_COUNT lanes = the browser's full per-host HTTP/1.1
+// budget for that address. When the PC answers on a second address the same
+// matrix runs as 12 lanes (6 + 6 across two origins, each pool at its own
+// cap). All background polls PAUSE while traffic owns the budget (netBusy()
+// guard), so no connection is ever wasted on polling mid-transfer.
+// Auto-receive is strictly one file at a time anyway, so discovery loses
+// nothing — the poll fires the instant the lanes finish.
+//
+// Integrity is byte-exact and unchanged: every lane verifies its
+// Content-Range start offset, lanes tile the file without overlap, and the
+// assembled total must equal fileSize before anything is saved. The bytes
+// on disk are identical to a single-stream download — same file, same
+// order, just fetched through parallel pipes.
+// ---------------------------------------------------------------------------
+const LANE_COUNT = 6;    // per ORIGIN — the browser's per-host HTTP/1.1 pool
+let _lanesBusy = false;  // true while lane traffic owns the connection budget
+let _pumpBusy = false;   // true while an upload pump owns the connection budget
+const LANE_MIN_SIZE = 8 * 1024 * 1024;   // below this a single stream is instant
+const LANE_MAX_RETRIES = 3;
+
+/** True while a speed test, lane download or upload pump is actively moving
+ *  bytes. Every background poll (/pending, the 1.2s status sync, heartbeat)
+ *  is paused meanwhile — each would steal one of the browser's 6 per-host
+ *  connections from the transfer that needs all of them. Server-side
+ *  presence stays alive regardless: the PC counts any authenticated request
+ *  as proof of life, and an active lane/upload is exactly that. */
+function netBusy() {
+  return _stRunning || _lanesBusy || _pumpBusy;
+}
+
+/** The addresses this PC answers on, for dual-origin lane sharding.
+ *  [null] = just the page's own origin (single 6-lane pool — previous
+ *  behaviour). A second entry = the OTHER address from /api/state links
+ *  (mDNS hostname or LAN IP) → the browser opens a second 6-connection
+ *  pool for it: 12 parallel TCP streams. */
+function laneOrigins() {
+  return (state.altOrigin && state.altOrigin !== location.origin) ? [null, state.altOrigin] : [null];
+}
+
+/** One lane request. useAlt=true fetches through the PC's second address:
+ *  cross-origin, so cookies are NOT sent (credentials omitted — the PC's
+ *  CORS is wildcard) and authentication rides on the X- headers plus the
+ *  signed ?t= token in file URLs, neither of which needs cookies. Range
+ *  verification is identical on both origins. */
+function laneRequest(url, useAlt, range) {
+  const target = (useAlt && state.altOrigin) ? new URL(url, state.altOrigin).href : url;
+  return fetch(target, {
+    headers: authHeaders({ Range: range }),
+    credentials: useAlt ? 'omit' : 'include',
+  });
+}
+
+// Stream the file into memory, choosing the lane engine for large files.
+async function streamDownload(tid, namePromise, totalSize, dlUrl) {
+  const url = dlUrl || `/api/transfer/${tid}/file`;
+  if ((totalSize || 0) >= LANE_MIN_SIZE) {
+    _lanesBusy = true;
+    try {
+      return await laneStreamDownload(tid, namePromise, totalSize, url);
+    } catch (err) {
+      // Lanes unavailable (old PC build ignoring Range, proxy, bad luck) —
+      // the single stream below is the exact pre-lane behaviour.
+      console.warn('[lanbeam] lane download failed, falling back to single stream:', err);
+      const dl = state.downloads.get(tid);
+      if (dl) { dl.sent = 0; dl.phase = 'multi-lane failed — retrying as one stream'; renderReceivedSoon(); }
+    } finally {
+      _lanesBusy = false;
+      // Resume discovery immediately — the queue must not wait for the next tick.
+      checkIncomingTransfers();
+    }
+  }
+  return singleStreamDownload(tid, namePromise, totalSize, url);
+}
+
+/** One request, exact progress — the original small-file path, unchanged. */
+async function singleStreamDownload(tid, namePromise, totalSize, url) {
+  const res = await fetch(url, {
     headers: authHeaders(),
     credentials: 'include',
   });
-  if (!res.ok) throw new Error('Server returned ' + res.status);
+  if (!res.ok) {
+    let body = null; try { body = await res.json(); } catch {}
+    throw classifyApiError(null, res.status, body);
+  }
   const reader = res.body.getReader();
   const parts = [];
   let received = 0;
@@ -1694,15 +2379,95 @@ async function streamDownload(tid, namePromise, totalSize) {
     received += value.length;
     updateDownloadProgress(tid, received);
   }
-  // Assemble with the correct MIME type so the platform treats it as the real
-  // file type, and save under the true name — video.mp4 stays video.mp4.
+  if (totalSize && received !== totalSize) {
+    throw new Error(`receive truncated — got ${received} of ${totalSize} bytes`);
+  }
   const fileName = await namePromise;
   const blob = new Blob(parts, { type: mimeForName(fileName) });
-  const url = URL.createObjectURL(blob);
-  triggerSavedDownload(url, fileName);
+  const blobUrl = URL.createObjectURL(blob);
+  triggerSavedDownload(blobUrl, fileName);
   // Revoke late — mobile browsers can still be writing the file to storage.
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  return url;
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  return blobUrl;
+}
+
+/**
+ * Lane Matrix: LANE_COUNT parallel range requests covering the file, each
+ * with its own resume-on-failure. Reassembly is lane order → original byte
+ * order, so the Blob is byte-identical to the file on the PC.
+ */
+async function laneStreamDownload(tid, namePromise, totalSize, url) {
+  // Dual-origin sharding: when the PC answers on a second address, the
+  // browser treats it as a SEPARATE origin with its own 6-connection pool —
+  // 12 parallel streams instead of 6. Odd-numbered lanes go to the second
+  // address so both pools warm up together; any lane whose alternate
+  // address fails to resolve simply reroutes to the primary origin — worst
+  // case it degrades to the exact 6-lane behaviour of the previous build.
+  const origins = laneOrigins();
+  const lanes = origins.length * LANE_COUNT;
+  const bounds = [];
+  const laneSize = Math.floor(totalSize / lanes);
+  for (let i = 0; i < lanes; i++) {
+    const s = i * laneSize;
+    const e = (i === lanes - 1) ? totalSize - 1 : s + laneSize - 1;
+    bounds.push([s, e]);
+  }
+  const laneParts = bounds.map(() => []);   // parts[i] = chunks of lane i, in order
+  let received = 0;                          // summed across lanes for progress
+
+  await Promise.all(bounds.map(([s, e], i) => (async () => {
+    let pos = s;   // next byte this lane still needs
+    let attempts = 0;
+    let useAlt = origins.length > 1 && (i % 2 === 1);  // odd lanes → 2nd address
+    while (pos <= e) {
+      try {
+        const res = await laneRequest(url, useAlt, `bytes=${pos}-${e}`);
+        if (res.status !== 206) {
+          // Server ignored the range (old build / middleware) — the body
+          // would be the WHOLE file on this lane. Bail to single stream.
+          throw Object.assign(new Error('server returned HTTP ' + res.status + ' for a range request'), { noLanes: true });
+        }
+        // The reply MUST start exactly where we asked — guards against any
+        // middlebox or cache rewriting ranges under us. Cross-origin replies
+        // expose Content-Range via the server's Expose-Headers.
+        const cr = res.headers.get('content-range') || '';
+        if (!cr.startsWith(`bytes ${pos}-`)) {
+          throw Object.assign(new Error('lane reply started at the wrong offset'), { noLanes: true });
+        }
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          laneParts[i].push(value);
+          pos += value.length;
+          received += value.length;
+          updateDownloadProgress(tid, received);
+        }
+        if (pos !== e + 1) throw new Error(`lane ${i} truncated at byte ${pos} (expected ${e + 1})`);
+        return; // lane complete
+      } catch (err) {
+        if (err && err.noLanes) throw err;   // structural — no point retrying
+        // The alternate address not resolving (mDNS gaps on some phones) is
+        // NOT a lane failure: reroute this lane to the primary origin once.
+        if (useAlt) { useAlt = false; continue; }
+        attempts++;
+        if (attempts > LANE_MAX_RETRIES) throw err;
+        await new Promise(r => setTimeout(r, 350 * attempts));
+        // pos is wherever this lane died → resume from exactly there
+      }
+    }
+  })()));
+
+  // Final integrity gate: every lane delivered, and the total is the file.
+  if (received !== totalSize) {
+    throw new Error(`lane receive incomplete — got ${received} of ${totalSize} bytes`);
+  }
+  const fileName = await namePromise;
+  const blob = new Blob([].concat(...laneParts), { type: mimeForName(fileName) });
+  const blobUrl = URL.createObjectURL(blob);
+  triggerSavedDownload(blobUrl, fileName);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  return blobUrl;
 }
 
 // Hand a blob: URL to the platform save flow under the true filename.
@@ -1718,9 +2483,9 @@ function triggerSavedDownload(url, fileName) {
 
 // Direct navigation — the browser's native downloader handles progress, name
 // and extension from the server headers. This is the path Opera Mini takes.
-function directDownload(tid) {
+function directDownload(dlUrl) {
   const a = document.createElement('a');
-  a.href = `/api/transfer/${tid}/file`;
+  a.href = dlUrl;
   // Intentionally no `download` attribute override: Content-Disposition on the
   // server decides the filename, which is what fixes the ".txt" bug.
   a.rel = 'noopener';
@@ -1730,11 +2495,7 @@ function directDownload(tid) {
 }
 
 async function ackTransfer(tid) {
-  try {
-    await fetch(`/api/transfer/${tid}/ack`, {
-      method: 'POST',
-      headers: authHeaders(),
-      credentials: 'include',
-    });
-  } catch {} // non-fatal: desktop will drop the entry when it can
+  // Now routed through apiPostQuiet — a failed ack is logged server-side and
+  // the PC's grace timer cleans up; no more swallowed catch {}.
+  await apiPostQuiet(`/api/transfer/${tid}/ack`);
 }
