@@ -633,33 +633,18 @@ async function onFilesPicked(files, targetDevice) {
       }
     }
 
-    // Send all selected files sequentially / queue
-    for (const file of files) {
+    // Multi-file queue mode: simultaneous (parallel) or sequential (one-by-one)
+    const isSimultaneous = state.settings?.sendQueueMode === "simultaneous";
+    const sendSingle = async (file) => {
       const fp = file.path || file.name;
       const name =
         file.name || (typeof fp === "string" ? fp.split(/[\\/]/).pop() : "file");
       if (!fp) {
-        // A File with no local path can never be read from disk. Fail THIS
-        // file loudly and keep the rest of the batch moving — a bad entry
-        // must not silently kill the whole send.
         failTransferCard(`Cannot read “${name}” — the file has no local path`);
-        continue;
+        return;
       }
-      // Optimistic UI: show the transfer card instantly, before IPC returns.
-      updateTransferCard(
-        {
-          fileName: name,
-          totalBytes: file.size || 0,
-          bytesTransferred: 0,
-          peerName: peer.name,
-          throughputMbps: 0,
-          etaMs: 0,
-          sparkline: [],
-        },
-        "out",
-      );
       try {
-        await window.lanbeam.transfer.send({
+        const tid = await window.lanbeam.transfer.send({
           filePath: fp,
           fileName: name,
           peerHost: peer.ip || peer.host || "127.0.0.1",
@@ -668,9 +653,32 @@ async function onFilesPicked(files, targetDevice) {
           peerName: peer.name,
           targetDeviceId: peer.deviceId,
         });
+        if (tid) {
+          updateTransferCard(
+            {
+              fileId: tid,
+              fileName: name,
+              totalBytes: file.size || 0,
+              bytesTransferred: 0,
+              peerName: peer.name,
+              throughputMbps: 0,
+              etaMs: 0,
+              sparkline: [],
+            },
+            "out",
+          );
+        }
       } catch (err) {
         console.error("Failed to send file:", name, err);
         failTransferCard(err && err.message ? err.message : "send failed");
+      }
+    };
+
+    if (isSimultaneous) {
+      await Promise.all(files.map(sendSingle));
+    } else {
+      for (const file of files) {
+        await sendSingle(file);
       }
     }
   } catch (err) {
@@ -1469,6 +1477,19 @@ function syncSettingsControls() {
           .forEach((el) => el.classList.toggle("selected", el === it));
       }
     }
+    const sendModeRoot = document.getElementById("dropdown-sendmode");
+    if (sendModeRoot) {
+      const smode = state.settings.sendQueueMode === "simultaneous" ? "simultaneous" : "sequential";
+      sendModeRoot.dataset.value = smode;
+      const it = sendModeRoot.querySelector(`.dropdown-item[data-value="${smode}"]`);
+      if (it) {
+        sendModeRoot.querySelector(".dropdown-selected").textContent =
+          it.textContent;
+        sendModeRoot
+          .querySelectorAll(".dropdown-item")
+          .forEach((el) => el.classList.toggle("selected", el === it));
+      }
+    }
     const speedRoot = document.getElementById("dropdown-speed");
     if (speedRoot) {
       const su = ["mbps", "mBps", "gBps", "gbps"].includes(
@@ -1564,6 +1585,12 @@ function bindSettings() {
       receiveMode: val === "ask" ? "ask" : "auto",
     });
     toast(val === "ask" ? "Receiving: ask every time" : "Receiving: automatic");
+  });
+  initCustomDropdown("dropdown-sendmode", (val) => {
+    window.lanbeam.settings.update({
+      sendQueueMode: val === "simultaneous" ? "simultaneous" : "sequential",
+    });
+    toast(val === "simultaneous" ? "Multi-file: simultaneous (parallel)" : "Multi-file: sequential (one by one)");
   });
   initCustomDropdown("dropdown-speed", (val) => {
     const labels = { mbps: "Mbps", mBps: "MB/s", gBps: "GB/s", gbps: "Gbps" };
@@ -2034,7 +2061,7 @@ function bindTransferEvents() {
       // the History view. Multiple transfers stack vertically.
       showCompletionToast(ev.result);
     } else if (ev.type === "inbound:failed" || ev.type === "outbound:failed") {
-      failTransferCard(ev.error);
+      failTransferCard(ev.error, ev.transferId);
     } else if (ev.type === "inbound:accept-request") {
       // receiveMode 'ask' → the desktop user decides: pop the Accept /
       // Decline card and answer the held /api/transfer/start through IPC.
@@ -2123,63 +2150,115 @@ function showApprovalCard(ev) {
   });
 }
 
+function _createCardElement(tid, direction = "in") {
+  const card = document.createElement("div");
+  card.className = "transfer-card";
+  card.id = `tcard-${tid}`;
+  card.dataset.tid = tid;
+  card.dataset.direction = direction;
+  card.innerHTML = `
+    <div class="transfer-info">
+      <svg class="transfer-file-icon" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="16" rx="2"/>
+        <polygon points="10,9 16,12 10,15" fill="currentColor" stroke="none"/>
+      </svg>
+      <div class="transfer-text">
+        <div class="transfer-name" id="tname-${tid}">—</div>
+        <div class="transfer-meta" id="tmeta-${tid}">— · —</div>
+      </div>
+    </div>
+    <div class="transfer-progress">
+      <div class="progress-bar">
+        <div class="progress-fill" id="tfill-${tid}" style="width:0%"></div>
+      </div>
+      <div class="progress-stats" id="tstats-${tid}">0% · 0 / 0 · ETA —</div>
+    </div>
+    <div class="transfer-speed">
+      <div class="speed-readout">
+        <span class="speed-value" id="tspeed-${tid}">0.0</span>
+        <span class="speed-unit" id="tunit-${tid}">Mbps</span>
+      </div>
+      <div class="speed-label">Current speed</div>
+      <svg class="speed-sparkline" id="tspark-${tid}" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="transfer-actions">
+      <button type="button" class="ghost-btn transfer-cancel-btn" data-tid="${escapeHtml(tid)}">Cancel transfer</button>
+    </div>`;
+
+  const cancelBtn = card.querySelector(".transfer-cancel-btn");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", async () => {
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = "Cancelling…";
+      const stats = card.querySelector(`#tstats-${tid}`);
+      if (stats) stats.textContent = "Cancelling…";
+      try {
+        await window.lanbeam.transfer.cancel(tid);
+      } catch {
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = "Cancel transfer";
+      }
+    });
+  }
+  return card;
+}
+
 function updateTransferCard(p, direction = "in") {
+  const tid = p.fileId || state.currentTransferId || "active";
   updateFloatCard(p, direction);
   const section = document.getElementById("transfer-section");
   if (!section) return;
-  if (hideTransferTimeout) {
-    clearTimeout(hideTransferTimeout);
-    hideTransferTimeout = null;
-  }
-  const wasHidden = section.style.display === "none" || !section.style.display;
-  const prevId = section.dataset.tid;
-  section.style.display = "block";
-  section.dataset.direction = direction;
-  if (
-    wasHidden ||
-    (state.currentTransferId && prevId !== state.currentTransferId)
-  )
-    _resetCancelBtn();
-  if (
-    wasHidden ||
-    (state.currentTransferId && prevId !== state.currentTransferId)
-  ) {
-    section.dataset.tid = state.currentTransferId || "";
+
+  section.style.display = "flex";
+  let card = document.getElementById(`tcard-${tid}`);
+  if (!card) {
+    card = _createCardElement(tid, direction);
+    section.appendChild(card);
     requestAnimationFrame(() =>
-      section.scrollIntoView({ behavior: "smooth", block: "center" }),
+      card.scrollIntoView({ behavior: "smooth", block: "nearest" }),
     );
   }
+
   if (p.fileName) {
-    const nameEl = document.getElementById("transfer-name");
+    const nameEl = card.querySelector(`#tname-${tid}`);
     if (nameEl) nameEl.textContent = p.fileName;
   }
-  const metaEl = document.getElementById("transfer-meta");
+  const metaEl = card.querySelector(`#tmeta-${tid}`);
   if (metaEl) {
     const peer = p.peerName || "Remote device";
     const totalSize = p.totalBytes > 0 ? formatBytes(p.totalBytes) : "—";
-    // Outbound = we are sending: "→ to <device>". Inbound: "← from <device>".
     metaEl.textContent = `${totalSize} · ${direction === "out" ? "\u2192 to" : "\u2190 from"} ${peer}`;
   }
   const pct = p.totalBytes > 0 ? (p.bytesTransferred / p.totalBytes) * 100 : 0;
-  const fill = document.getElementById("progress-fill");
+  const fill = card.querySelector(`#tfill-${tid}`);
   if (fill) fill.style.width = `${Math.min(100, pct).toFixed(1)}%`;
-  const stats = document.getElementById("progress-stats");
-  if (stats)
+  const stats = card.querySelector(`#tstats-${tid}`);
+  if (stats) {
     stats.textContent = p.stalled
-      ? `${Math.min(100, pct).toFixed(0)}% · ${formatBytes(p.bytesTransferred)} / ${formatBytes(p.totalBytes)} · Paused — waiting for the phone to reconnect`
+      ? `${Math.min(100, pct).toFixed(0)}% · ${formatBytes(p.bytesTransferred)} / ${formatBytes(p.totalBytes)} · Paused — waiting to reconnect`
       : `${Math.min(100, pct).toFixed(0)}% · ${formatBytes(p.bytesTransferred)} / ${formatBytes(p.totalBytes)} · ETA ${formatEta(p.etaMs)}`;
-  if (stats && !(p.bytesTransferred > 0))
-    stats.textContent =
-      direction === "out"
-        ? "Staged · waiting for the phone to pick up…"
-        : "Preparing · waiting for first data…";
-  const speedVal = document.getElementById("speed-value");
-  const speedUnit = document.querySelector(".speed-unit");
+    if (!(p.bytesTransferred > 0)) {
+      stats.textContent =
+        direction === "out"
+          ? "Staged · waiting for receiver…"
+          : "Preparing · waiting for first data…";
+    }
+  }
+  const speedVal = card.querySelector(`#tspeed-${tid}`);
+  const speedUnit = card.querySelector(`#tunit-${tid}`);
   const { value, unit } = formatSpeed(p.throughputMbps);
   if (speedVal) speedVal.textContent = value;
   if (speedUnit) speedUnit.textContent = unit;
-  state.spark = p.sparkline?.slice(-30) ?? [];
-  renderSparkline(state.spark);
+
+  const sparkEl = card.querySelector(`#tspark-${tid}`);
+  if (sparkEl && p.sparkline?.length) {
+    const pts = p.sparkline.slice(-30);
+    const max = Math.max(1, ...pts);
+    const d = pts
+      .map((y, i) => `${(i / (pts.length - 1 || 1)) * 100},${30 - (y / max) * 26}`)
+      .join(" ");
+    sparkEl.innerHTML = `<polyline fill="none" stroke="currentColor" stroke-width="2" points="${d}"/>`;
+  }
   state.currentTransfer = p;
 }
 
@@ -2281,7 +2360,8 @@ function _hideCancelBtn() {
 }
 
 function finalizeTransferCard(result) {
-  _hideCancelBtn();
+  const tid = result?.fileId || state.currentTransferId;
+  const card = tid ? document.getElementById(`tcard-${tid}`) : document.querySelector(".transfer-card");
   endFloatCard(
     "Complete \u00b7 " +
       formatSpeed(result.averageThroughputMbps).value +
@@ -2291,27 +2371,33 @@ function finalizeTransferCard(result) {
     3500,
     true,
   );
-  state.currentTransferId = null;
-  const avg = formatSpeed(result.averageThroughputMbps);
-  const stats = document.getElementById("progress-stats");
-  if (stats)
-    stats.textContent = `Complete · ${avg.value} ${avg.unit} avg · integrity ${result.integrityOk ? "OK" : "FAILED"}`;
-  const fill = document.getElementById("progress-fill");
-  if (fill) fill.style.width = `100%`;
-  const metaEl = document.getElementById("transfer-meta");
-  if (metaEl) {
-    const dirText = result.direction === "out" ? "Sent to" : "Received from";
-    metaEl.textContent = `${formatBytes(result.fileSize)} · ${dirText} ${result.peerName || "device"}`;
+  if (card) {
+    const cancelBtn = card.querySelector(".transfer-cancel-btn");
+    if (cancelBtn) cancelBtn.style.display = "none";
+    const avg = formatSpeed(result.averageThroughputMbps);
+    const stats = card.querySelector(`.progress-stats`);
+    if (stats)
+      stats.textContent = `Complete · ${avg.value} ${avg.unit} avg · integrity ${result.integrityOk ? "OK" : "FAILED"}`;
+    const fill = card.querySelector(`.progress-fill`);
+    if (fill) fill.style.width = `100%`;
+    const metaEl = card.querySelector(`.transfer-meta`);
+    if (metaEl) {
+      const dirText = result.direction === "out" ? "Sent to" : "Received from";
+      metaEl.textContent = `${formatBytes(result.fileSize)} · ${dirText} ${result.peerName || "device"}`;
+    }
+    setTimeout(() => {
+      card.remove();
+      const section = document.getElementById("transfer-section");
+      if (section && !section.querySelector(".transfer-card")) {
+        section.style.display = "none";
+      }
+    }, 3500);
   }
-  if (hideTransferTimeout) clearTimeout(hideTransferTimeout);
-  hideTransferTimeout = setTimeout(() => {
-    const section = document.getElementById("transfer-section");
-    if (section) section.style.display = "none";
-  }, 3500);
 }
 
-function failTransferCard(error) {
-  _hideCancelBtn();
+function failTransferCard(error, tid = null) {
+  const targetId = tid || state.currentTransferId;
+  const card = targetId ? document.getElementById(`tcard-${targetId}`) : document.querySelector(".transfer-card");
   endFloatCard(
     error === "Cancelled"
       ? "Transfer cancelled"
@@ -2319,8 +2405,6 @@ function failTransferCard(error) {
     5000,
     false,
   );
-  state.currentTransferId = null;
-  // Trigger history refresh from main process store
   window.lanbeam.state.get().then((st) => {
     if (st && st.history) {
       state.history = st.history;
@@ -2328,18 +2412,23 @@ function failTransferCard(error) {
       if (state.view === "history") renderHistory();
     }
   }).catch(() => {});
-  const section = document.getElementById("transfer-section");
-  if (!section) return;
-  const stats = document.getElementById("progress-stats");
-  if (stats)
-    stats.textContent =
-      error === "Cancelled"
-        ? "Transfer cancelled"
-        : `Transfer failed — ${error || "unknown error"}`;
-  if (hideTransferTimeout) clearTimeout(hideTransferTimeout);
-  hideTransferTimeout = setTimeout(() => {
-    section.style.display = "none";
-  }, 5000);
+  if (card) {
+    const cancelBtn = card.querySelector(".transfer-cancel-btn");
+    if (cancelBtn) cancelBtn.style.display = "none";
+    const stats = card.querySelector(`.progress-stats`);
+    if (stats)
+      stats.textContent =
+        error === "Cancelled"
+          ? "Transfer cancelled"
+          : `Transfer failed — ${error || "unknown error"}`;
+    setTimeout(() => {
+      card.remove();
+      const section = document.getElementById("transfer-section");
+      if (section && !section.querySelector(".transfer-card")) {
+        section.style.display = "none";
+      }
+    }, 5000);
+  }
 }
 
 // ---------------------------------------------------------------------------

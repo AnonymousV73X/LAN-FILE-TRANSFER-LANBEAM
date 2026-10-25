@@ -160,44 +160,8 @@
       </div>
     </section>
 
-    <!-- Active transfer card -->
-    <section class="transfer-section" id="transfer-section" style="display:none">
-      <div class="transfer-card">
-        <div class="transfer-info">
-          <svg class="transfer-file-icon" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="4" width="18" height="16" rx="2"/>
-            <polygon points="10,9 16,12 10,15" fill="currentColor" stroke="none"/>
-          </svg>
-          <div class="transfer-text">
-            <div class="transfer-name" id="transfer-name">—</div>
-            <div class="transfer-meta" id="transfer-meta">— · —</div>
-          </div>
-        </div>
-        <div class="transfer-progress">
-          <div class="progress-bar">
-            <div class="progress-fill" id="progress-fill" style="width:0%"></div>
-          </div>
-          <div class="progress-stats" id="progress-stats">0% · 0 / 0 · ETA —</div>
-        </div>
-        <div class="transfer-speed">
-          <div class="speed-readout">
-            <span class="speed-value" id="speed-value">0.0</span>
-            <span class="speed-unit">Mbps</span>
-          </div>
-          <div class="speed-label">Current speed</div>
-          <svg class="speed-sparkline" id="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
-        </div>
-        <!-- Cancel sits JUST BELOW THE FILE NAME on wide screens (first
-             grid column, second row — next to the transfer it aborts, not
-             at the far end of the card). On narrow layouts CSS demotes it
-             to a full-width bottom row, after the realtime speed banner.
-             It used to live inside the progress block, which left it
-             floating mid-card on phones. -->
-        <div class="transfer-actions">
-          <button type="button" class="ghost-btn" id="transfer-cancel">Cancel transfer</button>
-        </div>
-      </div>
-    </section>
+    <!-- Active transfer cards container (supports multiple parallel/sequential cards) -->
+    <section class="transfer-section" id="transfer-section" style="display:none"></section>
   </template>
 
   <template id="view-devices">
@@ -315,6 +279,19 @@
             <div class="dropdown-menu">
               <div class="dropdown-item selected" data-value="auto">Auto-receive (instant)</div>
               <div class="dropdown-item" data-value="ask">Ask every time</div>
+            </div>
+          </div>
+        </div>
+        <div class="setting">
+          <span class="setting-label">Multi-file sending</span>
+          <div class="custom-dropdown" id="dropdown-sendmode" data-value="sequential">
+            <button type="button" class="dropdown-trigger">
+              <span class="dropdown-selected">Sequential (one by one)</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item selected" data-value="sequential">Sequential (one by one)</div>
+              <div class="dropdown-item" data-value="simultaneous">Simultaneous (parallel)</div>
             </div>
           </div>
         </div>

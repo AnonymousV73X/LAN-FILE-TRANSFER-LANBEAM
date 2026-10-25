@@ -573,7 +573,12 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 
 /* ===== Transfer card ===== */
-.transfer-section { margin-bottom: 28px; }
+.transfer-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 28px;
+}
 .transfer-card {
   display: grid;
   /* Wide screens: 3 columns — file info | progress | speed. The cancel

@@ -42,6 +42,7 @@ export interface Settings {
   //   'auto' — land straight in Downloads with a toast (previous behaviour)
   //   'ask'  — hold the transfer and pop an Accept / Decline card first
   receiveMode?: 'auto' | 'ask';   // default 'auto'
+  sendQueueMode?: 'simultaneous' | 'sequential'; // default 'sequential'
   // How throughput is DISPLAYED on both ends (PC + mirrored to the phone via
   // /api/state): megabits, megabytes, gigabytes or gigabits per second.
   speedUnit?: 'mbps' | 'mBps' | 'gBps' | 'gbps';   // default 'mBps'
@@ -86,6 +87,7 @@ const DEFAULT_SETTINGS: Settings = {
   httpPort: 54321,
   acceptUnpairedAuto: false, // hard-locked
   receiveMode: 'auto',
+  sendQueueMode: 'sequential',
   speedUnit: 'mBps',
 };
 
