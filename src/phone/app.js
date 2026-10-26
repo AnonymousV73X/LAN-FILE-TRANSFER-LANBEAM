@@ -100,7 +100,7 @@ function classifyApiError(err, status, body) {
     code: aborted ? 'E_TIMEOUT' : 'E_NETWORK',
     userMessage: aborted
       ? 'PC took too long to respond — Wi-Fi drop?'
-      : 'PC unreachable — check Wi-Fi and that the PC is awake',
+      : 'PC unreachable',
   };
 }
 
@@ -1805,23 +1805,8 @@ let _pollFails = 0; // consecutive poll failures — drives the PC-unreachable b
  *  hidden the moment any poll succeeds. This is what used to be the
  *  invisible failure: pending list just stopped updating, no explanation. */
 function updatePcBanner(reachable) {
-  let el = document.getElementById('pc-unreachable');
-  if (reachable) {
-    if (el) el.remove();
-    return;
-  }
-  // Bytes are flowing right now (lane/single stream or system download) —
-  // the PC is reachable BY DEFINITION. A poll can queue for a moment behind
-  // transfer connections; that must not paint a false "PC unreachable".
-  const transferring = [...state.downloads.values()].some(d => d.status === 'downloading' || d.status === 'direct' || d.status === 'connecting');
-  if (transferring) return;
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'pc-unreachable';
-    el.innerHTML = '\u26a0\ufe0f <b>PC unreachable</b> — check Wi-Fi and that the PC is awake. Transfers resume automatically when the link returns.';
-    const host = document.querySelector('.app') || document.body;
-    host.prepend(el);
-  }
+  const el = document.getElementById("pc-unreachable");
+  if (el) el.remove();
 }
 
 async function checkIncomingTransfers() {
