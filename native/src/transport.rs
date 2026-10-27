@@ -18,6 +18,7 @@ use std::{error::Error, sync::Arc, net::SocketAddr};
 use quinn::{Endpoint, ServerConfig, ClientConfig};
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Mutex;
 use once_cell::sync::Lazy;
 
@@ -89,7 +90,6 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<(), Box<dyn Error + 
             Ok((mut send, mut recv)) => {
                 tokio::spawn(async move {
                     // Length-prefixed frame protocol — see send_file_quic for the writer.
-                    use tokio::io::AsyncReadExt;
                     let mut header = [0u8; 8];
                     if recv.read_exact(&mut header).await.is_err() {
                         let _ = send.reset(0u32.into());
@@ -150,12 +150,11 @@ pub async fn send_file_quic(
 
     // Read the file in chunks and send each over its own bi-stream.
     let _file = tokio::fs::File::open(file_path).await?;
-    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
     let total_chunks = ((file_size + chunk_size as u64 - 1) / chunk_size as u64) as usize;
     let max_streams = max_parallel_streams.max(1);
     let mut bytes_transferred: u64 = 0;
-    let mut chunk_retries: i32 = 0;
+    let chunk_retries: i32 = 0;
 
     let mut next_idx: usize = 0;
     let mut in_flight: Vec<tokio::task::JoinHandle<Result<usize, Box<dyn Error + Send + Sync>>>> = Vec::new();
@@ -181,7 +180,6 @@ pub async fn send_file_quic(
                 send.write_all(&buf).await?;
                 send.finish()?;
                 let mut ack = [0u8; 1];
-                use tokio::io::AsyncReadExt;
                 let _ = recv.read_exact(&mut ack).await;
                 Ok(length)
             }));
@@ -195,7 +193,7 @@ pub async fn send_file_quic(
             match handle.await {
                 Ok(Ok(len)) => bytes_transferred += len as u64,
                 Ok(Err(e)) => {
-                    chunk_retries += 1;
+                    let _ = chunk_retries;
                     return Err(format!("stream send failed: {e}").into());
                 }
                 Err(e) => return Err(format!("join: {e}").into()),
