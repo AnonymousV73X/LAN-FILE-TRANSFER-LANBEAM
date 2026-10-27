@@ -626,31 +626,43 @@ svg { display: block; flex-shrink: 0; }
 }
 
 /* ==========================================================================
-   Toast
+   Toast — Modern floating pill with frosted glass, responsive width & icon support
    ========================================================================== */
 .toast {
   position: fixed;
-  bottom: 70px;
+  bottom: calc(var(--safe-bottom) + 72px);
   left: 50%;
-  transform: translateX(-50%) translateY(10px);
-  background: var(--bg-elev-3);
-  border: 1px solid var(--accent-glow);
-  color: var(--text);
-  padding: 10px 18px;
+  transform: translateX(-50%) translateY(14px) scale(0.96);
+  background: rgba(22, 22, 27, 0.88);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-top-color: rgba(var(--accent-rgb), 0.35);
+  color: #FFFFFF;
+  padding: 11px 20px;
   border-radius: var(--radius-pill);
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 500;
-  z-index: 100;
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+  z-index: 1000;
   opacity: 0;
   pointer-events: none;
-  box-shadow: var(--shadow-md), var(--shadow-glow);
-  transition: opacity 0.25s var(--ease-out), transform 0.25s var(--ease-spring);
-  max-width: 90vw;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.65), 0 0 20px rgba(var(--accent-rgb), 0.16);
+  transition: opacity 0.28s var(--ease-out), transform 0.28s var(--ease-spring);
+  width: max-content;
+  min-width: 220px;
+  max-width: min(92vw, 460px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   text-align: center;
+  word-break: break-word;
 }
 .toast.show {
   opacity: 1;
-  transform: translateX(-50%) translateY(0);
+  transform: translateX(-50%) translateY(0) scale(1);
 }
 
 /* ==========================================================================

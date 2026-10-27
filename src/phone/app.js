@@ -311,12 +311,24 @@ function applyPhoneFont(choice) {
   document.documentElement.style.setProperty('--font-sans', val);
 }
 
+let _toastTimer = null;
 function toast(msg) {
   let t = document.querySelector('.toast');
-  if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); }
+  if (!t) {
+    t = document.createElement('div');
+    t.className = 'toast';
+    document.body.appendChild(t);
+  }
   t.textContent = msg;
+  if (_toastTimer) clearTimeout(_toastTimer);
+  t.classList.remove('show');
+  // Trigger reflow to restart animation smoothly if re-fired rapidly
+  void t.offsetWidth;
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2400);
+  _toastTimer = setTimeout(() => {
+    t.classList.remove('show');
+    _toastTimer = null;
+  }, 2800);
 }
 
 // Small inline SVG icon factory for file rows — modern minimalist line icons.
