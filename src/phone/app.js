@@ -708,6 +708,102 @@ function bindPicker() {
     folderInput?.click();
   });
 
+  const btnShareStorage = document.getElementById('btn-share-storage');
+  let storageShared = false;
+
+  btnShareStorage?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const btnText = document.getElementById('btn-share-storage-text');
+
+    if (storageShared) {
+      // Unshare
+      try {
+        await fetch('/api/explorer/unregister', {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ deviceId: state.deviceId }),
+        });
+        storageShared = false;
+        if (btnText) btnText.textContent = 'Drive';
+        btnShareStorage.classList.remove('btn-pill-accent');
+        toast('Phone drive unmounted from PC');
+      } catch (err) {
+        toast('Failed to unmount: ' + err.message);
+      }
+      return;
+    }
+
+    if (!window.showDirectoryPicker) {
+      toast('Drive mounting requires Chrome/Edge or Android Chrome');
+      return;
+    }
+
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      toast('Indexing storage for PC explorer...');
+      const entries = [];
+      let fileIdCounter = 1;
+
+      const walk = async (handle, rel) => {
+        for await (const entry of handle.values()) {
+          const currentRel = rel ? rel + '/' + entry.name : entry.name;
+          if (entry.kind === 'file') {
+            try {
+              const f = await entry.getFile();
+              entries.push({
+                id: 'f_' + (fileIdCounter++),
+                name: entry.name,
+                relativePath: currentRel,
+                isDirectory: false,
+                size: f.size,
+                mtime: f.lastModified,
+              });
+            } catch {}
+          } else if (entry.kind === 'directory') {
+            entries.push({
+              id: 'd_' + (fileIdCounter++),
+              name: entry.name,
+              relativePath: currentRel,
+              isDirectory: true,
+              size: 0,
+              mtime: Date.now(),
+            });
+            await walk(entry, currentRel);
+          }
+        }
+      };
+
+      await walk(dirHandle, '');
+
+      const devName = (state.selfDevice && state.selfDevice.name)
+        ? state.selfDevice.name
+        : (navigator.userAgent.includes('Android') ? 'Android Phone' : (navigator.userAgent.includes('iPhone') ? 'iPhone' : 'Mobile Storage'));
+
+      const res = await fetch('/api/explorer/register', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          deviceId: state.deviceId,
+          deviceName: devName,
+          entries: entries,
+        }),
+      });
+
+      if (res.ok) {
+        storageShared = true;
+        if (btnText) btnText.textContent = 'Mounted ✓';
+        btnShareStorage.classList.add('btn-pill-accent');
+        toast('Drive mounted on PC Explorer!');
+      } else {
+        const j = await res.json().catch(() => ({}));
+        toast('Failed to mount: ' + (j.error || res.statusText));
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      toast('Storage selection error: ' + err.message);
+    }
+  });
+
   zone.addEventListener('click', (e) => {
     if (e.target !== btnFolder && !btnFolder?.contains(e.target)) {
       fileInput?.click();

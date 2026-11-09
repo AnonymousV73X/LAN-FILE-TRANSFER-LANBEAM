@@ -1,3 +1,4 @@
+import { explorerService } from './explorer-service';
 /**
  * LANBeam — HTTP/1.1 server (fallback transport for phone browsers).
  *
@@ -46,6 +47,7 @@ export interface HttpServerOptions {
   orchestrator: TransferOrchestrator;
   downloadDir: string;
   onDevicePaired?: (device: any) => void;
+  onExplorerDeviceRegistered?: (deviceId: string, deviceName: string) => void;
   /**
    * Live connect links for /api/state. A closure because the definitive
    * URLs are only known after the server binds (port) and mDNS announces.
@@ -648,6 +650,33 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       // ---------------------------------------------------------------
       // Health / state
       // ---------------------------------------------------------------
+      if (pathname === '/api/explorer/register' && req.method === 'POST') {
+        try {
+          const body = await readBody(req);
+          const payload = JSON.parse(body.toString('utf8'));
+          const { deviceId, deviceName, entries } = payload;
+          if (!deviceId || !deviceName || !Array.isArray(entries)) {
+            sendJson(res, 400, { error: 'Missing fields' }); return;
+          }
+          explorerService.registerPhoneTree(deviceId, deviceName, entries);
+          opts.onExplorerDeviceRegistered?.(deviceId, deviceName);
+          log.info(`[Explorer] Virtual drive registered: ${deviceName} (${entries.length} entries)`);
+          sendJson(res, 200, { ok: true });
+        } catch (err: any) { sendJson(res, 400, { error: err.message }); }
+        return;
+      }
+      if (pathname === '/api/explorer/unregister' && req.method === 'POST') {
+        try {
+          const body = await readBody(req);
+          const { deviceId } = JSON.parse(body.toString('utf8'));
+          if (deviceId) {
+            explorerService.unregisterPhoneTree(deviceId);
+            opts.onExplorerDeviceRegistered?.(deviceId, '');
+          }
+          sendJson(res, 200, { ok: true });
+        } catch (err: any) { sendJson(res, 400, { error: err.message }); }
+        return;
+      }
       if (pathname === '/api/health' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, version: '1.0.0' });
         return;
