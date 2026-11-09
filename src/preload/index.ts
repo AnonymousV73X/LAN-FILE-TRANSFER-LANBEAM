@@ -59,6 +59,15 @@ const api = {
       return () => ipcRenderer.removeListener('transfer:event', sub);
     },
   },
+  share: {
+    getPending: () => ipcRenderer.invoke('share:get-pending'),
+    clear: (paths?: string[]) => ipcRenderer.invoke('share:clear', paths),
+    onPending: (cb: (files: { path: string; name: string; size: number }[]) => void) => {
+      const sub = (_e: any, f: any) => cb(f);
+      ipcRenderer.on('share:pending', sub);
+      return () => ipcRenderer.removeListener('share:pending', sub);
+    },
+  },
   network: {
     onChanged: (cb: (d: { ipUrl: string; httpUrl: string; noNetwork?: boolean }) => void) => {
       const sub = (_e: any, d: any) => cb(d);
@@ -80,6 +89,21 @@ const api = {
   history: {
     showInFolder: (filePathOrName: string) => ipcRenderer.invoke('history:show-in-folder', filePathOrName),
     openFile: (filePathOrName: string) => ipcRenderer.invoke('history:open-file', filePathOrName),
+  },
+  explorer: {
+    getDevices: () => ipcRenderer.invoke('explorer:get-devices'),
+    listDirectory: (opts?: { deviceId?: string; path?: string }) => ipcRenderer.invoke('explorer:list-dir', opts),
+    openItem: (targetPath: string) => ipcRenderer.invoke('explorer:open-item', targetPath),
+    search: (opts: { scope: 'folder' | 'drive'; targetPath: string; query: string; deviceId?: string }) => ipcRenderer.invoke('explorer:search', opts),
+    addFtpDevice: (config: { host: string; port?: number; user?: string; password?: string; name?: string }) => ipcRenderer.invoke('explorer:add-ftp', config),
+    removeFtpDevice: (id: string) => ipcRenderer.invoke('explorer:remove-ftp', id),
+    transfer: (opts: { sourcePath: string; targetDir: string; sourceDeviceId: string; targetDeviceId: string; totalBytes?: number }) =>
+      ipcRenderer.invoke('explorer:transfer', opts),
+    onDevicesUpdated: (cb: (devices: any[]) => void) => {
+      const sub = (_e: any, d: any[]) => cb(d);
+      ipcRenderer.on('explorer:devices-updated', sub);
+      return () => ipcRenderer.removeListener('explorer:devices-updated', sub);
+    },
   },
   app: {
     minimize: () => ipcRenderer.invoke('app:minimize'),

@@ -74,6 +74,11 @@
               <polyline points="9 22 9 12 15 12 15 22"/>
             </svg>
           </button>
+                    <button class="nav-item" data-view="explorer" aria-label="Explorer">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
           <button class="nav-item" data-view="devices" aria-label="Devices">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
@@ -112,6 +117,48 @@
 
 
 
+
+  <!-- Explorer view template -->
+  <template id="view-explorer">
+    <div class="explorer-container">
+      <div class="explorer-header">
+        <div class="explorer-devices-tabs" id="explorer-devices-bar">
+          <!-- Dynamic storage device tabs -->
+        </div>
+        <div class="explorer-breadcrumbs-bar">
+          <button id="explorer-up-btn" class="explorer-btn-icon" title="Up Directory">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <div class="explorer-breadcrumbs" id="explorer-breadcrumbs"></div>
+          <div class="explorer-search-box">
+            <span class="explorer-search-icon">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </span>
+            <input type="text" id="explorer-search-input" placeholder="Search folder..." autocomplete="off" spellcheck="false" />
+            <button id="explorer-search-scope-btn" class="explorer-scope-pill" title="Toggle: Search Current Folder vs Whole Drive">In Folder</button>
+            <button id="explorer-search-clear-btn" class="explorer-search-clear" title="Clear search">✕</button>
+          </div>
+          <button id="explorer-refresh-btn" class="explorer-btn-icon" title="Refresh">
+            <svg class="refresh-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+              <path fill="none" d="M0 0h24v24H0z"></path>
+              <path d="M5.463 4.433A9.961 9.961 0 0 1 12 2c5.523 0 10 4.477 10 10 0 2.136-.67 4.116-1.81 5.74L17 12h3A8 8 0 0 0 6.46 6.228l-.997-1.795zm13.074 15.134A9.961 9.961 0 0 1 12 22C6.477 22 2 17.523 2 12c0-2.136.67-4.116 1.81-5.74L7 12H4a8 8 0 0 0 13.54 5.772l.997 1.795z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="explorer-body">
+        <div class="explorer-table-header">
+          <span class="col-name">Name</span>
+          <span class="col-size">Size</span>
+          <span class="col-date">Modified</span>
+        </div>
+        <div class="explorer-list" id="explorer-list">
+          <!-- Items will be populated here -->
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- Templates for views (kept in DOM but swapped into .content) -->
   <template id="view-home">
     <!-- Top row: drop zone (70%) + QR panel (30%) -->
@@ -128,7 +175,8 @@
       </div>
       <div class="qr-panel">
         <div class="qr-frame" id="qr-frame" role="button" tabindex="0" aria-label="Enlarge QR code">
-          <img id="qr-image" alt="Pair QR code" />
+          <div id="qr-skeleton" class="skeleton-shimmer" style="position:absolute;inset:0;border-radius:inherit;z-index:0;min-height:100px"></div>
+          <img id="qr-image" alt="" style="position:relative;z-index:1;display:none" />
           <span class="qr-tip" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="11" y1="8.5" x2="11" y2="13.5"/><line x1="8.5" y1="11" x2="13.5" y2="11"/></svg>
             <span>Click to enlarge</span>
@@ -155,9 +203,7 @@
           <span id="device-count">0 devices online</span>
         </div>
       </div>
-      <div class="device-cards" id="device-cards">
-        <div class="empty-hint">No paired devices yet. Scan the QR above with your phone.</div>
-      </div>
+      <div class="device-cards" id="device-cards"><div style="display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:rgba(255,255,255,0.03);margin-bottom:8px"><div class="skeleton-shimmer" style="width:40px;height:40px;border-radius:50%;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px"><div class="skeleton-shimmer" style="height:13px;width:50%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:35%;border-radius:4px"></div></div></div><div style="display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:rgba(255,255,255,0.03);margin-bottom:8px"><div class="skeleton-shimmer" style="width:40px;height:40px;border-radius:50%;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px"><div class="skeleton-shimmer" style="height:13px;width:50%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:35%;border-radius:4px"></div></div></div></div>
     </section>
 
     <!-- Active transfer cards container (supports multiple parallel/sequential cards) -->
@@ -176,9 +222,9 @@
           <span>Clear offline</span>
         </button>
       </div>
-      <div class="device-cards" id="device-cards-page"></div>
+      <div class="device-cards" id="device-cards-page"><div class="device-card" style="opacity:.5;pointer-events:none"><div class="device-icon skeleton-shimmer" style="width:40px;height:40px;border-radius:50%"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px;margin-left:12px"><div class="skeleton-shimmer" style="height:13px;width:50%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:35%;border-radius:4px"></div></div></div><div class="device-card" style="opacity:.5;pointer-events:none"><div class="device-icon skeleton-shimmer" style="width:40px;height:40px;border-radius:50%"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px;margin-left:12px"><div class="skeleton-shimmer" style="height:13px;width:50%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:35%;border-radius:4px"></div></div></div><div class="device-card" style="opacity:.5;pointer-events:none"><div class="device-icon skeleton-shimmer" style="width:40px;height:40px;border-radius:50%"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px;margin-left:12px"><div class="skeleton-shimmer" style="height:13px;width:50%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:35%;border-radius:4px"></div></div></div></div>
       <h3 class="page-subtitle">Discovered Peers</h3>
-      <div class="device-cards" id="peer-cards-page"></div>
+      <div class="device-cards" id="peer-cards-page"><div class="device-card" style="opacity:.5;pointer-events:none"><div class="device-icon skeleton-shimmer" style="width:40px;height:40px;border-radius:50%"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px;margin-left:12px"><div class="skeleton-shimmer" style="height:13px;width:50%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:35%;border-radius:4px"></div></div></div></div>
     </section>
   </template>
 
@@ -186,9 +232,7 @@
     <section class="page">
       <h2 class="page-title">History</h2>
       <p class="page-sub">Recent transfers with throughput and integrity.</p>
-      <div class="history-list" id="history-list">
-        <div class="empty-hint">No transfers yet.</div>
-      </div>
+      <div class="history-list" id="history-list"><div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><div class="skeleton-shimmer" style="width:36px;height:36px;border-radius:8px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px"><div class="skeleton-shimmer" style="height:13px;width:65%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:40%;border-radius:4px"></div></div><div class="skeleton-shimmer" style="width:60px;height:22px;border-radius:12px"></div></div><div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><div class="skeleton-shimmer" style="width:36px;height:36px;border-radius:8px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px"><div class="skeleton-shimmer" style="height:13px;width:65%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:40%;border-radius:4px"></div></div><div class="skeleton-shimmer" style="width:60px;height:22px;border-radius:12px"></div></div><div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><div class="skeleton-shimmer" style="width:36px;height:36px;border-radius:8px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px"><div class="skeleton-shimmer" style="height:13px;width:65%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:40%;border-radius:4px"></div></div><div class="skeleton-shimmer" style="width:60px;height:22px;border-radius:12px"></div></div><div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><div class="skeleton-shimmer" style="width:36px;height:36px;border-radius:8px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px"><div class="skeleton-shimmer" style="height:13px;width:65%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:40%;border-radius:4px"></div></div><div class="skeleton-shimmer" style="width:60px;height:22px;border-radius:12px"></div></div><div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><div class="skeleton-shimmer" style="width:36px;height:36px;border-radius:8px;flex-shrink:0"></div><div style="flex:1;display:flex;flex-direction:column;gap:7px"><div class="skeleton-shimmer" style="height:13px;width:65%;border-radius:4px"></div><div class="skeleton-shimmer" style="height:10px;width:40%;border-radius:4px"></div></div><div class="skeleton-shimmer" style="width:60px;height:22px;border-radius:12px"></div></div></div>
     </section>
   </template>
 

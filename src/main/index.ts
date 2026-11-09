@@ -21,6 +21,7 @@ import { randomBytes } from 'crypto';
 import QRCode from 'qrcode';
 import os from 'os';
 import { StateStore } from './store';
+import { explorerService } from './explorer-service';
 import { MdnsService } from './mdns';
 import { PairingManager } from './pairing';
 import { startHttpServer } from './http-server';
@@ -49,6 +50,29 @@ function currentDownloadDir(): string {
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+
+// ── NovaTune hand-off: files shared via `--share=<path>` wait here until a
+// paired device is online; the renderer drains them (share:get-pending / clear).
+const pendingShares: string[] = [];
+function sharesFromArgv(argv: string[]): string[] {
+  return argv.filter(a => a.startsWith('--share=')).map(a => a.slice(8)).filter(Boolean);
+}
+async function shareInfo() {
+  const out: { path: string; name: string; size: number }[] = [];
+  for (const p of pendingShares) {
+    try { const st = await fs.stat(p); out.push({ path: p, name: path.basename(p), size: st.size }); }
+    catch { pendingShares.splice(pendingShares.indexOf(p), 1); }
+  }
+  return out;
+}
+async function queueShares(paths: string[]) {
+  for (const p of paths) if (!pendingShares.includes(p)) pendingShares.push(p);
+  if (!mainWindow || mainWindow.isDestroyed()) { await createWindow(); return; }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send('share:pending', await shareInfo());
+}
 let mdns: MdnsService | null = null;
 let orchestrator: TransferOrchestrator | null = null;
 let pairManager: PairingManager | null = null;
@@ -220,6 +244,7 @@ function registerIpc() {
   ipcMain.handle('devices:remove', (_e, deviceId: string) => {
     store!.removePairedDevice(deviceId);
     mainWindow?.webContents.send('devices:updated', store!.pairedDevices);
+      mainWindow?.webContents.send('explorer:devices-updated');
     return true;
   });
 
@@ -243,6 +268,11 @@ function registerIpc() {
   // held /api/transfer/start request through this IPC.
   ipcMain.handle('transfer:respond', (_e, requestId: string, accepted: boolean) => {
     return orchestrator!.respondAcceptance(requestId, accepted);
+  });
+
+  ipcMain.handle('share:get-pending', () => shareInfo());
+  ipcMain.handle('share:clear', (_e, paths?: string[]) => {
+    for (const p of paths ?? [...pendingShares]) { const i = pendingShares.indexOf(p); if (i >= 0) pendingShares.splice(i, 1); }
   });
 
   ipcMain.handle('transfer:cancel', (_e, transferId: string) => orchestrator!.cancelTransfer(transferId));
@@ -417,6 +447,225 @@ function registerIpc() {
       log.error('Failed to open file:', err);
       return false;
     }
+  });
+
+  // ─── Explorer IPC ────────────────────────────────────────────────────────
+  ipcMain.handle('explorer:get-devices', async () => {
+    const localDevices = await explorerService.getDevices();
+    if (store) {
+      const ftpList = store.ftpDevices;
+      for (const ftp of ftpList) {
+        explorerService.registerFtpDevice(ftp.id, ftp.name, {
+          host: ftp.host,
+          port: ftp.port,
+          user: ftp.user,
+          password: ftp.password,
+        });
+        localDevices.push({
+          id: ftp.id,
+          name: ftp.name || `FTP (${ftp.host})`,
+          kind: 'phone',
+          rootPath: `ftp://${ftp.id}/`,
+        });
+      }
+    }
+    return localDevices;
+  });
+
+  ipcMain.handle('explorer:list-dir', async (_e, opts?: { deviceId?: string; path?: string }) => {
+    console.log('[IPC] explorer:list-dir opts:', JSON.stringify(opts));
+    if (opts?.deviceId && opts.deviceId.startsWith('ftp-')) {
+      return await explorerService.listFtpDirectory(opts.deviceId, opts.path || '/');
+    }
+    if (opts?.deviceId && opts.deviceId.startsWith('phone-')) {
+      const pId = opts.deviceId.replace('phone-', '');
+      return explorerService.listPhoneDirectory(pId, opts.path || '');
+    }
+    const result = await explorerService.listPcDirectory(opts?.path);
+    console.log('[IPC] explorer:list-dir result path:', result.currentPath, 'items:', result.items.length);
+    return result;
+  });
+
+  ipcMain.handle('explorer:add-ftp', async (_e, config: { host: string; port?: number; user?: string; password?: string; name?: string }) => {
+    try {
+      const host = (config.host || '').trim();
+      const port = Number(config.port) || 21;
+      if (!host) throw new Error('Host IP/hostname is required');
+      const id = 'ftp-' + host.replace(/[^a-zA-Z0-9]/g, '_') + '-' + port;
+      const name = (config.name || '').trim() || `Phone FTP (${host})`;
+
+      const device = {
+        id,
+        name,
+        host,
+        port,
+        user: config.user,
+        password: config.password,
+        addedAt: Date.now(),
+      };
+
+      // Register and test directory listing to verify credentials and connectivity immediately
+      explorerService.registerFtpDevice(id, name, device);
+      try {
+        await explorerService.listFtpDirectory(id, '/');
+      } catch (testErr: any) {
+        explorerService.unregisterFtpDevice(id);
+        throw testErr;
+      }
+
+      store?.addFtpDevice(device);
+      mainWindow?.webContents.send('explorer:devices-updated');
+      return { ok: true, device };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('explorer:remove-ftp', async (_e, id: string) => {
+    try {
+      store?.removeFtpDevice(id);
+      explorerService.unregisterFtpDevice(id);
+      mainWindow?.webContents.send('explorer:devices-updated');
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('explorer:transfer', async (_e, opts: {
+    transferId?: string;
+    sourcePath: string;
+    targetDir: string;
+    sourceDeviceId: string;
+    targetDeviceId: string;
+    totalBytes?: number;
+  }) => {
+    console.log('[IPC explorer:transfer] requested:', opts);
+    const tid = opts.transferId || ('ftp-xfer-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+    const fileName = opts.sourcePath.split(/[\\/]/).filter(Boolean).pop() || 'item';
+    const filePath = path.join(opts.targetDir, fileName);
+
+    // Resolve human-readable peer device name
+    let peerName = 'Phone Storage';
+    if (opts.sourceDeviceId.startsWith('ftp-')) {
+      const dev = store?.ftpDevices.find(d => d.id === opts.sourceDeviceId);
+      if (dev && dev.name) peerName = dev.name;
+    } else if (opts.targetDeviceId.startsWith('ftp-')) {
+      const dev = store?.ftpDevices.find(d => d.id === opts.targetDeviceId);
+      if (dev && dev.name) peerName = dev.name;
+    }
+
+    const direction: 'in' | 'out' = opts.sourceDeviceId.startsWith('ftp-') ? 'in' : 'out';
+    let bytesSent = 0;
+    const startTime = Date.now();
+    let lastProgress = 0;
+
+    const sparklineHistory: number[] = [];
+    const knownTotal = opts.totalBytes && opts.totalBytes > 0 ? opts.totalBytes : 0;
+
+    const emitProgress = (b: number) => {
+      bytesSent += b;
+      const now = Date.now();
+      if (now - lastProgress > 100) {
+        lastProgress = now;
+        const elapsedSec = (now - startTime) / 1000 || 0.001;
+        const mbps = (bytesSent * 8) / (elapsedSec * 1024 * 1024);
+        sparklineHistory.push(mbps);
+        if (sparklineHistory.length > 30) sparklineHistory.shift();
+
+        const curTotal = knownTotal > 0 ? knownTotal : Math.max(bytesSent, 1);
+        const remainingBytes = Math.max(0, curTotal - bytesSent);
+        const bytesPerSec = elapsedSec > 0 ? bytesSent / elapsedSec : 1;
+        const etaMs = knownTotal > 0 && bytesPerSec > 0 ? Math.round((remainingBytes / bytesPerSec) * 1000) : 0;
+
+        mainWindow?.webContents.send('transfer:event', {
+          type: direction === 'in' ? 'inbound:progress' : 'outbound:progress',
+          transferId: tid,
+          progress: {
+            fileId: tid,
+            fileName,
+            filePath,
+            peerName,
+            direction,
+            bytesTransferred: bytesSent,
+            totalBytes: curTotal,
+            throughputMbps: mbps,
+            chunkRetries: 0,
+            etaMs,
+            sparkline: [...sparklineHistory],
+          },
+        });
+      }
+    };
+
+    try {
+      // 1. FTP -> PC
+      if (opts.sourceDeviceId.startsWith('ftp-') && !opts.targetDeviceId.startsWith('ftp-')) {
+        await explorerService.downloadFtpItem(opts.sourceDeviceId, opts.sourcePath, opts.targetDir, emitProgress);
+      }
+      // 2. PC -> FTP
+      else if (!opts.sourceDeviceId.startsWith('ftp-') && opts.targetDeviceId.startsWith('ftp-')) {
+        await explorerService.uploadToFtp(opts.targetDeviceId, opts.sourcePath, opts.targetDir, emitProgress);
+      }
+      // 3. PC -> PC local copy
+      else if (!opts.sourceDeviceId.startsWith('ftp-') && !opts.targetDeviceId.startsWith('ftp-')) {
+        const dest = path.join(opts.targetDir, fileName);
+        await fs.cp(opts.sourcePath, dest, { recursive: true });
+      }
+
+      const durationMs = Math.max(50, Date.now() - startTime);
+      const avgMbps = (bytesSent * 8) / ((durationMs / 1000) * 1024 * 1024);
+
+      const finalTotal = knownTotal > 0 ? knownTotal : bytesSent;
+      const resultPayload = {
+        fileId: tid,
+        id: tid,
+        fileName,
+        filePath,
+        fileSize: finalTotal,
+        bytesTransferred: finalTotal,
+        totalBytes: finalTotal,
+        direction,
+        peerName,
+        integrityOk: true,
+        durationMs,
+        startedAt: startTime,
+        completedAt: Date.now(),
+        averageThroughputMbps: avgMbps,
+        status: 'complete' as const,
+      };
+
+      mainWindow?.webContents.send('transfer:event', {
+        type: direction === 'in' ? 'inbound:complete' : 'outbound:complete',
+        transferId: tid,
+        outputPath: opts.targetDir,
+        result: resultPayload,
+      });
+
+      return { ok: true, transferId: tid };
+    } catch (err: any) {
+      mainWindow?.webContents.send('transfer:event', {
+        type: direction === 'in' ? 'inbound:failed' : 'outbound:failed',
+        transferId: tid,
+        error: err.message,
+      });
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('explorer:open-item', async (_e, targetPath: string) => {
+    if (!targetPath) return false;
+    try {
+      await shell.openPath(targetPath);
+      return true;
+    } catch (err) {
+      log.error('Failed to open item:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('explorer:search', async (_e, opts: { scope: 'folder' | 'drive'; targetPath: string; query: string; deviceId?: string }) => {
+    return await explorerService.searchFiles(opts);
   });
 
   // ─── OTA Update IPC ──────────────────────────────────────────────────────
@@ -626,6 +875,10 @@ async function boot() {
     downloadDir: DOWNLOAD_DIR,
     onDevicePaired: (_device) => {
       mainWindow?.webContents.send('devices:updated', store!.pairedDevices);
+      mainWindow?.webContents.send('explorer:devices-updated');
+    },
+    onExplorerDeviceRegistered: (_deviceId: string, _deviceName: string) => {
+      mainWindow?.webContents.send('explorer:devices-updated');
     },
     // Permanent + direct links for /api/state — closures over the module
     // vars because the definitive port/URL only settle after bind + mDNS.
@@ -776,7 +1029,13 @@ function r_formatWifi(w?: any): string {
 if (process.argv.includes('--benchmark')) {
   bootBenchmark().catch(err => { console.error(err); process.exit(1); });
 } else {
-  app.whenReady().then(boot).catch(err => console.error('Boot failed:', err));
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+  } else {
+    pendingShares.push(...sharesFromArgv(process.argv));
+    app.on('second-instance', (_e, argv) => { queueShares(sharesFromArgv(argv)); });
+    app.whenReady().then(boot).catch(err => console.error('Boot failed:', err));
+  }
 
   app.on('window-all-closed', () => {
     // Keep running in tray on all platforms.
