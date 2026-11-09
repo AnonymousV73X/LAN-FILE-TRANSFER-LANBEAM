@@ -1,12 +1,13 @@
 const explorerState = {
   devices: [],
   currentDeviceId: null,
-  currentPath: '',
+  currentPath: "",
   items: [],
   historyStack: [],
-  searchScope: 'folder',
+  searchScope: "folder",
   searchDebounceTimer: null,
-  devicePaths: {},  // last visited path per deviceId
+  selectedPaths: new Set(),
+  devicePaths: {}, // last visited path per deviceId
 };
 function initCustomDropdown(id, onChange) {
   const root = document.getElementById(id);
@@ -359,7 +360,7 @@ function renderQr() {
   const img = document.getElementById("qr-image");
   if (img && state.qr) {
     img.src = state.qr.png;
-    img.style.display = '';
+    img.style.display = "";
     const skel = document.getElementById("qr-skeleton");
     if (skel) skel.remove();
     const frame = document.getElementById("qr-frame");
@@ -430,7 +431,7 @@ function openQrLightbox() {
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
       <div class="qr-lightbox-frame"><img src="${state.qr.png}" alt="Pair QR code enlarged" draggable="false" /></div>
-      <div class="qr-lightbox-url" title="${escapeHtml(state.qr.url)}">${escapeHtml(state.qr.url)}</div>
+      <div class="qr-lightbox-url" data-tip="${escapeHtml(state.qr.url)}">${escapeHtml(state.qr.url)}</div>
       <div class="qr-lightbox-hint">Point your phone camera at the code to pair</div>
     </div>
   `;
@@ -512,10 +513,7 @@ function applyThemeVars(color, fontChoice) {
   const rgb = hexToRgb(color);
   if (rgb) {
     rs.setProperty("--accent-rgb", `${rgb.r}, ${rgb.g}, ${rgb.b}`);
-    rs.setProperty(
-      "--accent-soft",
-      `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`,
-    );
+    rs.setProperty("--accent-soft", `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`);
     rs.setProperty(
       "--accent-very-soft",
       `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.06)`,
@@ -549,14 +547,17 @@ function dedupeDevices(list) {
   const best = new Map();
   for (const d of list) {
     const key = d.deviceId
-      ? (d.ip ? `${d.kind}::${d.name}::${d.ip}` : `id::${d.deviceId}`)
+      ? d.ip
+        ? `${d.kind}::${d.name}::${d.ip}`
+        : `id::${d.deviceId}`
       : `n::${d.name}`;
     const cur = best.get(key);
     if (
       !cur ||
       (isOnline(d) && !isOnline(cur)) ||
       (isOnline(d) === isOnline(cur) && (d.lastSeen || 0) > (cur.lastSeen || 0))
-    ) best.set(key, d);
+    )
+      best.set(key, d);
   }
   return [...best.values()];
 }
@@ -570,7 +571,8 @@ function renderDevices() {
 
   const activeDevices = dedupeDevices(
     state.pairedDevices.filter(
-      (d) => isOnline(d) || (activeTransferPeer && d.name === activeTransferPeer),
+      (d) =>
+        isOnline(d) || (activeTransferPeer && d.name === activeTransferPeer),
     ),
   ).sort((x, y) => (y.lastSeen || 0) - (x.lastSeen || 0));
   if (!activeDevices.length) {
@@ -665,7 +667,8 @@ async function flushPendingShares() {
   if (!online.length) return;
   state._shareBusy = true;
   try {
-    const peer = online.length === 1 ? online[0] : await chooseDevicePopover(online);
+    const peer =
+      online.length === 1 ? online[0] : await chooseDevicePopover(online);
     if (!peer) {
       state._shareHold = true; // cancelled — wait for a new connection or "Send"
       return;
@@ -711,18 +714,21 @@ async function onFilesPicked(files, targetDevice) {
     //   Sequential   = one card at a time; the next file only starts AFTER
     //                  the current transfer fully completes or fails.
     //   Simultaneous = all files start immediately, each with its own card.
-    const isSimultaneous = state.settings && state.settings.sendQueueMode === "simultaneous";
+    const isSimultaneous =
+      state.settings && state.settings.sendQueueMode === "simultaneous";
 
     // Initialise resolver map -- the transfer:event handler resolves
     // these when a transfer's complete/failed event fires.
     if (!state._seqResolvers) state._seqResolvers = new Map();
 
-    const stageAndCard = async function(file) {
+    const stageAndCard = async function (file) {
       const fp = file.path || file.name;
       const name =
         file.name || (typeof fp === "string" ? fp.split(/[\/]/).pop() : "file");
       if (!fp) {
-        failTransferCard("Cannot read \"" + name + "\" — the file has no local path");
+        failTransferCard(
+          'Cannot read "' + name + '" — the file has no local path',
+        );
         return null;
       }
       try {
@@ -760,8 +766,8 @@ async function onFilesPicked(files, targetDevice) {
 
     // Returns a Promise that resolves when the given transfer finishes.
     // The transfer:event handler resolves these via state._seqResolvers.
-    const waitForTransfer = function(tid) {
-      return new Promise(function(resolve) {
+    const waitForTransfer = function (tid) {
+      return new Promise(function (resolve) {
         if (!tid) return resolve(false);
         // Already completed before we got here (fast LAN race condition) — resolve now
         if (state._completedTids && state._completedTids.has(tid)) {
@@ -770,12 +776,15 @@ async function onFilesPicked(files, targetDevice) {
         }
         state._seqResolvers.set(tid, resolve);
         // Safety valve: unblock after 5 min in case an event is ever lost
-        setTimeout(function() {
-          if (state._seqResolvers.has(tid)) {
-            state._seqResolvers.delete(tid);
-            resolve(false);
-          }
-        }, 5 * 60 * 1000);
+        setTimeout(
+          function () {
+            if (state._seqResolvers.has(tid)) {
+              state._seqResolvers.delete(tid);
+              resolve(false);
+            }
+          },
+          5 * 60 * 1000,
+        );
       });
     };
 
@@ -1014,7 +1023,7 @@ function modalRow(label, valueHtml, opts = {}) {
 }
 
 function copyBtnHtml(text, title) {
-  return `<button class="dm-copy" data-dm-copy="${escapeHtml(text)}" title="${escapeHtml(title || "Copy")}">${DEVICE_MODAL_ICONS.copy}</button>`;
+  return `<button class="dm-copy" data-dm-copy="${escapeHtml(text)}" data-tip="${escapeHtml(title || "Copy")}">${DEVICE_MODAL_ICONS.copy}</button>`;
 }
 
 function showDeviceModal(deviceId) {
@@ -1252,11 +1261,13 @@ function bindSpeedTest() {
       const boost = r.single.mbps > 0 ? r.lanes.mbps / r.single.mbps : 0;
       let verdict;
       if (r.single.mbps >= 2000) {
-        verdict = "Engine is more than fast enough for any 1GbE/Wi-Fi link — the network, not the PC, is the limit.";
+        verdict =
+          "Engine is more than fast enough for any 1GbE/Wi-Fi link — the network, not the PC, is the limit.";
       } else if (boost >= 1.4) {
         verdict = `Parallel lanes lift this PC's sends by about ×${boost.toFixed(1)} — and large PC→phone sends already use them (up to 12 lanes on the phone, across two addresses of this PC).`;
       } else {
-        verdict = "Single stream already saturates the engine here; gains would have to come from the network side.";
+        verdict =
+          "Single stream already saturates the engine here; gains would have to come from the network side.";
       }
       out.innerHTML = `
         <div class="st-hero">
@@ -1316,10 +1327,17 @@ function renderDevicesView() {
   // page on every open, every 20s tick and every mDNS blip.
   const sig = [
     state.pairedDevices
-      .map((d) => `${d.deviceId}:${d.kind}:${d.name}:${d.online ? 1 : 0}:${d.lastSeen || 0}`)
+      .map(
+        (d) =>
+          `${d.deviceId}:${d.kind}:${d.name}:${d.online ? 1 : 0}:${d.lastSeen || 0}`,
+      )
       .join(","),
-    state.peers.map((p) => `${p.deviceId}:${p.name}:${p.host}:${p.port}`).join(","),
-    state.wifi ? `${state.wifi.linkRateMbps || ""}:${state.wifi.band || ""}` : "",
+    state.peers
+      .map((p) => `${p.deviceId}:${p.name}:${p.host}:${p.port}`)
+      .join(","),
+    state.wifi
+      ? `${state.wifi.linkRateMbps || ""}:${state.wifi.band || ""}`
+      : "",
   ].join("|");
   const anyHost = host || peerHost;
   if (anyHost && anyHost._devSig === sig && host?.childElementCount) return;
@@ -1329,7 +1347,11 @@ function renderDevicesView() {
       host.innerHTML = `<div class="empty-hint">No paired devices yet.</div>`;
     } else {
       host.innerHTML = dedupeDevices(state.pairedDevices)
-        .sort((x, y) => Number(isOnline(y)) - Number(isOnline(x)) || (y.lastSeen || 0) - (x.lastSeen || 0))
+        .sort(
+          (x, y) =>
+            Number(isOnline(y)) - Number(isOnline(x)) ||
+            (y.lastSeen || 0) - (x.lastSeen || 0),
+        )
         .map((d) => deviceCardHtml(d, isOnline(d)))
         .join("");
     }
@@ -1389,8 +1411,16 @@ function historyRowHtml(h) {
   const status = h.status || (h.integrityOk ? "complete" : "failed");
   const isCancelled = status === "cancelled";
   const isFailed = status === "failed" || (!h.integrityOk && !isCancelled);
-  const statusLabel = isCancelled ? "✕ Cancelled" : isFailed ? "✗ Failed" : "✓ Verified";
-  const statusClass = isCancelled ? "h-integrity-warn" : isFailed ? "h-integrity-bad" : "h-integrity-ok";
+  const statusLabel = isCancelled
+    ? "✕ Cancelled"
+    : isFailed
+      ? "✗ Failed"
+      : "✓ Verified";
+  const statusClass = isCancelled
+    ? "h-integrity-warn"
+    : isFailed
+      ? "h-integrity-bad"
+      : "h-integrity-ok";
   const direction = h.direction === "out" ? "out" : "in";
   const peerName = h.peerName || "Unknown device";
   const html = `
@@ -1403,8 +1433,8 @@ function historyRowHtml(h) {
         <div class="${statusClass}">${statusLabel}</div>
         <div class="h-time">${completedAt}</div>
         <div class="h-actions">
-          <button class="h-action-btn" data-history-action="open" title="Open file" aria-label="Open file">${_OPEN_ICON}</button>
-          <button class="h-action-btn" data-history-action="folder" title="Show in folder" aria-label="Show in folder">${_FOLDER_ICON}</button>
+          <button class="h-action-btn" data-history-action="open" data-tip="Open file" aria-label="Open file">${_OPEN_ICON}</button>
+          <button class="h-action-btn" data-history-action="folder" data-tip="Show in folder" aria-label="Show in folder">${_FOLDER_ICON}</button>
         </div>
       </div>`;
   if (_histRowCache.size > 800) _histRowCache.clear();
@@ -1587,9 +1617,14 @@ function syncSettingsControls() {
     }
     const sendModeRoot = document.getElementById("dropdown-sendmode");
     if (sendModeRoot) {
-      const smode = state.settings.sendQueueMode === "simultaneous" ? "simultaneous" : "sequential";
+      const smode =
+        state.settings.sendQueueMode === "simultaneous"
+          ? "simultaneous"
+          : "sequential";
       sendModeRoot.dataset.value = smode;
-      const it = sendModeRoot.querySelector(`.dropdown-item[data-value="${smode}"]`);
+      const it = sendModeRoot.querySelector(
+        `.dropdown-item[data-value="${smode}"]`,
+      );
       if (it) {
         sendModeRoot.querySelector(".dropdown-selected").textContent =
           it.textContent;
@@ -1619,18 +1654,16 @@ function syncSettingsControls() {
   // Swatch highlight follows the live accent — lives here (not in the
   // one-time binder) so opening the pane after a theme change marks the
   // right swatch without a remount.
-  document
-    .querySelectorAll("#settings-swatches .swatch")
-    .forEach((sw) => {
-      if (
-        state.settings?.accentColor &&
-        sw.dataset.color === state.settings.accentColor
-      ) {
-        sw.classList.add("active");
-      } else {
-        sw.classList.remove("active");
-      }
-    });
+  document.querySelectorAll("#settings-swatches .swatch").forEach((sw) => {
+    if (
+      state.settings?.accentColor &&
+      sw.dataset.color === state.settings.accentColor
+    ) {
+      sw.classList.add("active");
+    } else {
+      sw.classList.remove("active");
+    }
+  });
 }
 
 function bindSettings() {
@@ -1698,7 +1731,11 @@ function bindSettings() {
     window.lanbeam.settings.update({
       sendQueueMode: val === "simultaneous" ? "simultaneous" : "sequential",
     });
-    toast(val === "simultaneous" ? "Multi-file: simultaneous (parallel)" : "Multi-file: sequential (one by one)");
+    toast(
+      val === "simultaneous"
+        ? "Multi-file: simultaneous (parallel)"
+        : "Multi-file: sequential (one by one)",
+    );
   });
   initCustomDropdown("dropdown-speed", (val) => {
     const labels = { mbps: "Mbps", mBps: "MB/s", gBps: "GB/s", gbps: "Gbps" };
@@ -1789,7 +1826,11 @@ function applyQrCursor() {
   if (!frames.length) return;
   let accent = "";
   try {
-    accent = (getComputedStyle(document.documentElement).getPropertyValue("--accent-color") || "").trim();
+    accent = (
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--accent-color",
+      ) || ""
+    ).trim();
   } catch {}
   if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(accent)) accent = "#00E5FF";
   const rgb = hexToRgb(accent) || { r: 0, g: 229, b: 255 };
@@ -1911,11 +1952,16 @@ function playTransferCompleteSound() {
     if (!window.AudioContext && !window.webkitAudioContext) return;
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const now = ctx.currentTime;
-    [[880, 0, 0.12], [1320, 0.13, 0.22]].forEach(function(spec) {
-      const freq = spec[0], start = spec[1], end = spec[2];
+    [
+      [880, 0, 0.12],
+      [1320, 0.13, 0.22],
+    ].forEach(function (spec) {
+      const freq = spec[0],
+        start = spec[1],
+        end = spec[2];
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'sine';
+      osc.type = "sine";
       osc.frequency.setValueAtTime(freq, now + start);
       gain.gain.setValueAtTime(0, now + start);
       gain.gain.linearRampToValueAtTime(0.18, now + start + 0.02);
@@ -1925,8 +1971,12 @@ function playTransferCompleteSound() {
       osc.start(now + start);
       osc.stop(now + end);
     });
-    setTimeout(function() { try { ctx.close(); } catch(e) {} }, 600);
-  } catch(e) {}
+    setTimeout(function () {
+      try {
+        ctx.close();
+      } catch (e) {}
+    }, 600);
+  } catch (e) {}
 }
 
 function showCompletionToast(r) {
@@ -1950,9 +2000,9 @@ function showCompletionToast(r) {
   // Incoming keeps Open / Folder — the file is genuinely new to this machine.
   const isOut = direction === "out";
   const actionsHtml = isOut
-    ? `<button class="toast-action-btn toast-action-btn-primary" data-toast-action="history" title="Go to History">${TOAST_ICON_HISTORY}<span>Go to History</span></button>`
-    : `<button class="toast-action-btn toast-action-btn-primary" data-toast-action="open" title="Open file">${TOAST_ICON_OPEN}<span>Open</span></button>
-      <button class="toast-action-btn" data-toast-action="folder" title="Show in folder">${TOAST_ICON_FOLDER}<span>Folder</span></button>`;
+    ? `<button class="toast-action-btn toast-action-btn-primary" data-toast-action="history" data-tip="Go to History">${TOAST_ICON_HISTORY}<span>Go to History</span></button>`
+    : `<button class="toast-action-btn toast-action-btn-primary" data-toast-action="open" data-tip="Open file">${TOAST_ICON_OPEN}<span>Open</span></button>
+      <button class="toast-action-btn" data-toast-action="folder" data-tip="Show in folder">${TOAST_ICON_FOLDER}<span>Folder</span></button>`;
 
   const stack = _ensureToastsStack();
   const card = document.createElement("div");
@@ -1974,7 +2024,7 @@ function showCompletionToast(r) {
           <span class="${integrityOk ? "ok" : "bad"}">${integrityOk ? "✓ Verified" : "✗ Failed"}</span>
         </div>
       </div>
-      <button class="toast-close-btn" data-toast-action="close" title="Dismiss" aria-label="Dismiss">${TOAST_ICON_CLOSE}</button>
+      <button class="toast-close-btn" data-toast-action="close" data-tip="Dismiss" aria-label="Dismiss">${TOAST_ICON_CLOSE}</button>
     </div>
     <div class="toast-card-actions">
       ${actionsHtml}
@@ -2209,7 +2259,10 @@ function bindTransferEvents() {
         }
         if (state._seqResolvers && _tid) {
           const _res = state._seqResolvers.get(_tid);
-          if (_res) { _res(true); state._seqResolvers.delete(_tid); }
+          if (_res) {
+            _res(true);
+            state._seqResolvers.delete(_tid);
+          }
         }
       }
     } else if (ev.type === "inbound:failed" || ev.type === "outbound:failed") {
@@ -2223,7 +2276,10 @@ function bindTransferEvents() {
         }
         if (state._seqResolvers && _ftid) {
           const _fres = state._seqResolvers.get(_ftid);
-          if (_fres) { _fres(false); state._seqResolvers.delete(_ftid); }
+          if (_fres) {
+            _fres(false);
+            state._seqResolvers.delete(_ftid);
+          }
         }
       }
     } else if (ev.type === "inbound:accept-request") {
@@ -2317,10 +2373,12 @@ function showApprovalCard(ev) {
 function renderSparklineToSvg(svg, values, tid) {
   if (!svg) return;
   if (!values || !values.length) {
-    svg.innerHTML = '';
+    svg.innerHTML = "";
     return;
   }
-  const w = 100, h = 30, pad = 2;
+  const w = 100,
+    h = 30,
+    pad = 2;
   const max = Math.max(...values, 1);
   const min = Math.min(...values, 0);
   const range = max - min || 1;
@@ -2332,11 +2390,11 @@ function renderSparklineToSvg(svg, values, tid) {
   });
   const rgb = hexToRgb(
     getComputedStyle(document.documentElement)
-      .getPropertyValue('--accent-color')
-      .trim() || '#00E5FF'
+      .getPropertyValue("--accent-color")
+      .trim() || "#00E5FF",
   );
-  const stroke = rgb ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})` : '#00E5FF';
-  const fillId = 'spark-grad-' + tid;
+  const stroke = rgb ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})` : "#00E5FF";
+  const fillId = "spark-grad-" + tid;
   svg.innerHTML = `
     <defs>
       <linearGradient id="${fillId}" x1="0" y1="0" x2="0" y2="1">
@@ -2344,8 +2402,8 @@ function renderSparklineToSvg(svg, values, tid) {
         <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
       </linearGradient>
     </defs>
-    <polygon points="${pad},${h - pad} ${points.join(' ')} ${w - pad},${h - pad}" fill="url(#${fillId})"/>
-    <polyline points="${points.join(' ')}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon points="${pad},${h - pad} ${points.join(" ")} ${w - pad},${h - pad}" fill="url(#${fillId})"/>
+    <polyline points="${points.join(" ")}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
   `;
 }
 
@@ -2561,7 +2619,10 @@ function updateFloatCard(p, direction) {
     } else if (p.bytesTransferred > 0) {
       stats.textContent = `${pct.toFixed(0)}% · ${formatBytes(p.bytesTransferred)} / ${formatBytes(p.totalBytes)} · ETA ${formatEta(p.etaMs)}`;
     } else {
-      stats.textContent = direction === "out" ? "Staged · waiting for receiver…" : "Preparing · waiting for data…";
+      stats.textContent =
+        direction === "out"
+          ? "Staged · waiting for receiver…"
+          : "Preparing · waiting for data…";
     }
   }
 
@@ -2621,7 +2682,9 @@ function _hideCancelBtn() {
 
 function finalizeTransferCard(result) {
   const tid = result?.fileId || state.currentTransferId;
-  const card = (tid ? document.getElementById(`tcard-${tid}`) : null) || document.querySelector(".transfer-card");
+  const card =
+    (tid ? document.getElementById(`tcard-${tid}`) : null) ||
+    document.querySelector(".transfer-card");
   endFloatCard(
     "Complete \u00b7 " +
       formatSpeed(result.averageThroughputMbps).value +
@@ -2657,7 +2720,9 @@ function finalizeTransferCard(result) {
 
 function failTransferCard(error, tid = null) {
   const targetId = tid || state.currentTransferId;
-  const card = targetId ? document.getElementById(`tcard-${targetId}`) : document.querySelector(".transfer-card");
+  const card = targetId
+    ? document.getElementById(`tcard-${targetId}`)
+    : document.querySelector(".transfer-card");
   endFloatCard(
     error === "Cancelled"
       ? "Transfer cancelled"
@@ -2665,13 +2730,16 @@ function failTransferCard(error, tid = null) {
     5000,
     false,
   );
-  window.lanbeam.state.get().then((st) => {
-    if (st && st.history) {
-      state.history = st.history;
-      state.historyRev = (state.historyRev || 0) + 1;
-      if (state.view === "history") renderHistory();
-    }
-  }).catch(() => {});
+  window.lanbeam.state
+    .get()
+    .then((st) => {
+      if (st && st.history) {
+        state.history = st.history;
+        state.historyRev = (state.historyRev || 0) + 1;
+        if (state.view === "history") renderHistory();
+      }
+    })
+    .catch(() => {});
   if (card) {
     const cancelBtn = card.querySelector(".transfer-cancel-btn");
     if (cancelBtn) cancelBtn.style.display = "none";
@@ -2832,9 +2900,7 @@ async function boot() {
   let _prevOnlineIds = null;
   window.lanbeam.devices.onUpdated((devices) => {
     const onlineNow = new Set(
-      (devices || [])
-        .filter((d) => d && isOnline(d))
-        .map((d) => d.deviceId),
+      (devices || []).filter((d) => d && isOnline(d)).map((d) => d.deviceId),
     );
     const lightboxWasOpen = !!_qrLightbox;
     let freshlyConnectedName = null;
@@ -2885,7 +2951,10 @@ async function boot() {
 
   // NovaTune hand-off: queued files wait here until a device is online.
   window.lanbeam.share.onPending(setPendingShares);
-  window.lanbeam.share.getPending().then(setPendingShares).catch(() => {});
+  window.lanbeam.share
+    .getPending()
+    .then(setPendingShares)
+    .catch(() => {});
   setInterval(flushPendingShares, 2000);
 
   // Settings updates
@@ -2955,7 +3024,9 @@ async function boot() {
     } catch {}
   };
   window.addEventListener("focus", resync);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) resync(); });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) resync();
+  });
 
   // Real radio info for device cards + the device popup (generation/band/rate).
   const refreshWifi = async () => {
@@ -2988,25 +3059,25 @@ boot().catch((err) => console.error("renderer boot failed:", err));
   if (!window.lanbeam?.update) return;
 
   // Inject banner element once
-  const banner = document.createElement('div');
-  banner.id = 'update-banner';
+  const banner = document.createElement("div");
+  banner.id = "update-banner";
   banner.style.cssText = [
-    'display:none',
-    'position:fixed',
-    'bottom:0',
-    'left:0',
-    'right:0',
-    'z-index:9999',
-    'background:var(--accent,#00c2a8)',
-    'color:#000',
-    'font-size:13px',
-    'font-weight:600',
-    'padding:10px 18px',
-    'display:none',
-    'align-items:center',
-    'gap:12px',
-    'box-shadow:0 -2px 16px rgba(0,0,0,.4)',
-  ].join(';');
+    "display:none",
+    "position:fixed",
+    "bottom:0",
+    "left:0",
+    "right:0",
+    "z-index:9999",
+    "background:var(--accent,#00c2a8)",
+    "color:#000",
+    "font-size:13px",
+    "font-weight:600",
+    "padding:10px 18px",
+    "display:none",
+    "align-items:center",
+    "gap:12px",
+    "box-shadow:0 -2px 16px rgba(0,0,0,.4)",
+  ].join(";");
 
   banner.innerHTML = `
     <span id="update-msg" style="flex:1">🚀 Update available — downloading…</span>
@@ -3020,28 +3091,33 @@ boot().catch((err) => console.error("renderer boot failed:", err));
   `;
   document.body.appendChild(banner);
 
-  const msg   = document.getElementById('update-msg');
-  const pWrap = document.getElementById('update-progress-wrap');
-  const pBar  = document.getElementById('update-progress-bar');
-  const iBtn  = document.getElementById('update-install-btn');
-  const dBtn  = document.getElementById('update-dismiss-btn');
+  const msg = document.getElementById("update-msg");
+  const pWrap = document.getElementById("update-progress-wrap");
+  const pBar = document.getElementById("update-progress-bar");
+  const iBtn = document.getElementById("update-install-btn");
+  const dBtn = document.getElementById("update-dismiss-btn");
 
-  function showBanner() { banner.style.display = 'flex'; }
-  function hideBanner() { banner.style.display = 'none'; }
+  function showBanner() {
+    banner.style.display = "flex";
+  }
+  function hideBanner() {
+    banner.style.display = "none";
+  }
 
-  dBtn?.addEventListener('click', hideBanner);
-  iBtn?.addEventListener('click', () => window.lanbeam.update.install());
+  dBtn?.addEventListener("click", hideBanner);
+  iBtn?.addEventListener("click", () => window.lanbeam.update.install());
 
   // Main emits 'update:available' when a newer release is found
   window.lanbeam.update.onAvailable((info) => {
-    if (msg) msg.textContent = `🚀 LANBeam ${info.version} is available — downloading update…`;
+    if (msg)
+      msg.textContent = `🚀 LANBeam ${info.version} is available — downloading update…`;
     showBanner();
   });
 
   // Download progress
   window.lanbeam.update.onProgress((p) => {
-    if (pWrap) pWrap.style.display = 'block';
-    if (pBar)  pBar.style.width = p.percent.toFixed(1) + '%';
+    if (pWrap) pWrap.style.display = "block";
+    if (pBar) pBar.style.width = p.percent.toFixed(1) + "%";
     const mb = (p.transferred / 1048576).toFixed(1);
     const tot = (p.total / 1048576).toFixed(1);
     if (msg) msg.textContent = `⬇ Downloading update… ${mb} / ${tot} MB`;
@@ -3049,9 +3125,9 @@ boot().catch((err) => console.error("renderer boot failed:", err));
 
   // Update fully downloaded — show install button
   window.lanbeam.update.onDownloaded(() => {
-    if (pWrap) pWrap.style.display = 'none';
-    if (msg)   msg.textContent = '✅ Update downloaded — restart to install';
-    if (iBtn)  iBtn.style.display = 'inline-block';
+    if (pWrap) pWrap.style.display = "none";
+    if (msg) msg.textContent = "✅ Update downloaded — restart to install";
+    if (iBtn) iBtn.style.display = "inline-block";
     showBanner();
   });
 
@@ -3059,41 +3135,41 @@ boot().catch((err) => console.error("renderer boot failed:", err));
   window.lanbeam.update.onError(() => hideBanner());
 })();
 
-
-
-
 /* ==========================================================================
    Explorer View Implementation
    ========================================================================== */
 
 function bindExplorer() {
-  console.log('[Explorer] Binding explorer view elements...');
+  console.log("[Explorer] Binding explorer view elements...");
   const upBtn = document.getElementById("explorer-up-btn");
   const refreshBtn = document.getElementById("explorer-refresh-btn");
   const searchInput = document.getElementById("explorer-search-input");
   const scopeBtn = document.getElementById("explorer-search-scope-btn");
   const clearBtn = document.getElementById("explorer-search-clear-btn");
 
-  console.log('[Explorer] Elements status:', {
+  console.log("[Explorer] Elements status:", {
     upBtn: !!upBtn,
     refreshBtn: !!refreshBtn,
     searchInput: !!searchInput,
     scopeBtn: !!scopeBtn,
-    clearBtn: !!clearBtn
+    clearBtn: !!clearBtn,
   });
 
   upBtn?.addEventListener("click", () => {
-    console.log('[Explorer] Up button clicked');
+    console.log("[Explorer] Up button clicked");
     navigateExplorerUp();
   });
 
   refreshBtn?.addEventListener("click", async () => {
-    console.log('[Explorer] Refresh button clicked');
+    console.log("[Explorer] Refresh button clicked");
     if (refreshBtn.classList.contains("spinning")) return;
     refreshBtn.classList.add("spinning");
     const startTime = Date.now();
     try {
-      await loadExplorerDirectory(explorerState.currentDeviceId, explorerState.currentPath);
+      await loadExplorerDirectory(
+        explorerState.currentDeviceId,
+        explorerState.currentPath,
+      );
     } finally {
       const elapsed = Date.now() - startTime;
       const minSpin = Math.max(0, 500 - elapsed);
@@ -3106,16 +3182,17 @@ function bindExplorer() {
   // Scope toggle button
   scopeBtn?.addEventListener("click", (e) => {
     e.stopPropagation();
-    explorerState.searchScope = (explorerState.searchScope === 'drive') ? 'folder' : 'drive';
-    console.log('[Explorer] Scope toggled to:', explorerState.searchScope);
-    if (explorerState.searchScope === 'drive') {
-      scopeBtn.textContent = 'Whole Drive';
-      scopeBtn.classList.add('scope-drive');
-      if (searchInput) searchInput.placeholder = 'Search whole drive...';
+    explorerState.searchScope =
+      explorerState.searchScope === "drive" ? "folder" : "drive";
+    console.log("[Explorer] Scope toggled to:", explorerState.searchScope);
+    if (explorerState.searchScope === "drive") {
+      scopeBtn.textContent = "Whole Drive";
+      scopeBtn.classList.add("scope-drive");
+      if (searchInput) searchInput.placeholder = "Search whole drive...";
     } else {
-      scopeBtn.textContent = 'In Folder';
-      scopeBtn.classList.remove('scope-drive');
-      if (searchInput) searchInput.placeholder = 'Search folder...';
+      scopeBtn.textContent = "In Folder";
+      scopeBtn.classList.remove("scope-drive");
+      if (searchInput) searchInput.placeholder = "Search folder...";
     }
     if (searchInput && searchInput.value.trim()) {
       triggerExplorerSearch(searchInput.value.trim());
@@ -3125,17 +3202,17 @@ function bindExplorer() {
   // Live search input
   searchInput?.addEventListener("input", (e) => {
     const val = e.target.value;
-    console.log('[Explorer] Search input changed:', val);
-    if (clearBtn) clearBtn.style.display = val ? 'inline-flex' : 'none';
+    console.log("[Explorer] Search input changed:", val);
+    if (clearBtn) clearBtn.style.display = val ? "inline-flex" : "none";
 
     clearTimeout(explorerState.searchDebounceTimer);
     if (!val.trim()) {
-      console.log('[Explorer] Empty query, restoring full directory items');
+      console.log("[Explorer] Empty query, restoring full directory items");
       renderExplorerList(explorerState.items);
       return;
     }
 
-    const delay = (explorerState.searchScope === 'folder') ? 50 : 250;
+    const delay = explorerState.searchScope === "folder" ? 50 : 250;
     explorerState.searchDebounceTimer = setTimeout(() => {
       triggerExplorerSearch(val.trim());
     }, delay);
@@ -3144,12 +3221,12 @@ function bindExplorer() {
   // Clear button
   clearBtn?.addEventListener("click", (e) => {
     e.stopPropagation();
-    console.log('[Explorer] Search cleared');
+    console.log("[Explorer] Search cleared");
     if (searchInput) {
-      searchInput.value = '';
+      searchInput.value = "";
       searchInput.focus();
     }
-    clearBtn.style.display = 'none';
+    clearBtn.style.display = "none";
     renderExplorerList(explorerState.items);
   });
 
@@ -3161,9 +3238,12 @@ function bindExplorer() {
 }
 
 function refreshExplorer() {
-  console.log('[Explorer] refreshExplorer called');
+  console.log("[Explorer] refreshExplorer called");
   if (explorerState.currentDeviceId && explorerState.currentPath) {
-    loadExplorerDirectory(explorerState.currentDeviceId, explorerState.currentPath);
+    loadExplorerDirectory(
+      explorerState.currentDeviceId,
+      explorerState.currentPath,
+    );
   } else {
     loadExplorerDevices();
   }
@@ -3173,11 +3253,16 @@ async function loadExplorerDevices() {
   // show skeleton tabs
   const bar0 = document.getElementById("explorer-devices-bar");
   if (bar0 && !bar0.querySelector(".explorer-device-tab")) {
-    bar0.innerHTML = [1,2,3].map(() => '<div class="skeleton-shimmer" style="display:inline-block;width:100px;height:32px;border-radius:20px;margin-right:8px;vertical-align:middle"></div>').join('');
+    bar0.innerHTML = [1, 2, 3]
+      .map(
+        () =>
+          '<div class="skeleton-shimmer" style="display:inline-block;width:100px;height:32px;border-radius:20px;margin-right:8px;vertical-align:middle"></div>',
+      )
+      .join("");
   }
   try {
     const devices = await window.lanbeam.explorer.getDevices();
-    console.log('[Explorer] getDevices returned:', devices);
+    console.log("[Explorer] getDevices returned:", devices);
     explorerState.devices = devices || [];
     renderExplorerDevicesBar();
     if (!explorerState.currentDeviceId && devices.length > 0) {
@@ -3195,17 +3280,20 @@ function renderExplorerDevicesBar() {
 
   explorerState.devices.forEach((dev) => {
     const tabWrap = document.createElement("div");
-    tabWrap.style.cssText = "display: inline-flex; align-items: center; position: relative;";
+    tabWrap.style.cssText =
+      "display: inline-flex; align-items: center; position: relative;";
 
     const btn = document.createElement("button");
-    btn.className = "explorer-device-tab" + (dev.id === explorerState.currentDeviceId ? " active" : "");
+    btn.className =
+      "explorer-device-tab" +
+      (dev.id === explorerState.currentDeviceId ? " active" : "");
 
     const isFtp = dev.id.startsWith("ftp-");
     const iconSvg = isFtp
       ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>'
       : dev.kind === "phone"
-      ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>'
-      : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>';
+        ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>';
 
     btn.innerHTML = `${iconSvg} <span>${escapeHtml(dev.name)}</span>`;
     btn.addEventListener("click", () => {
@@ -3222,7 +3310,7 @@ function renderExplorerDevicesBar() {
         e.stopPropagation();
         await window.lanbeam.explorer.removeFtpDevice(dev.id);
         if (explorerState.currentDeviceId === dev.id) {
-          const fallback = explorerState.devices.find(d => d.id !== dev.id);
+          const fallback = explorerState.devices.find((d) => d.id !== dev.id);
           if (fallback) selectExplorerDevice(fallback.id, fallback.rootPath);
         }
       });
@@ -3253,19 +3341,19 @@ function openFtpModal() {
   let predictedLabel = "";
 
   if (Array.isArray(state.pairedDevices)) {
-    const phone = state.pairedDevices.find(d => d.ip && d.ip !== "127.0.0.1");
+    const phone = state.pairedDevices.find((d) => d.ip && d.ip !== "127.0.0.1");
     if (phone) {
       predictedHost = phone.ip;
-      predictedLabel = (phone.name ? phone.name + " Storage" : "");
+      predictedLabel = phone.name ? phone.name + " Storage" : "";
     }
   }
 
   if (!predictedHost && state.ipUrl) {
     try {
       const u = new URL(state.ipUrl);
-      const parts = u.hostname.split('.');
+      const parts = u.hostname.split(".");
       if (parts.length === 4) {
-        predictedHost = parts.slice(0, 3).join('.') + '.';
+        predictedHost = parts.slice(0, 3).join(".") + ".";
       }
     } catch (_) {}
   }
@@ -3325,46 +3413,48 @@ function openFtpModal() {
 
   document.body.appendChild(modal);
 
-  const hostInput = modal.querySelector('#ftp-input-host');
-  const portInput = modal.querySelector('#ftp-input-port');
-  const userInput = modal.querySelector('#ftp-input-user');
-  const passInput = modal.querySelector('#ftp-input-pass');
-  const nameInput = modal.querySelector('#ftp-input-name');
-  const statusEl = modal.querySelector('#ftp-modal-status');
-  const cancelBtn = modal.querySelector('#ftp-modal-cancel');
-  const connectBtn = modal.querySelector('#ftp-modal-connect');
+  const hostInput = modal.querySelector("#ftp-input-host");
+  const portInput = modal.querySelector("#ftp-input-port");
+  const userInput = modal.querySelector("#ftp-input-user");
+  const passInput = modal.querySelector("#ftp-input-pass");
+  const nameInput = modal.querySelector("#ftp-input-name");
+  const statusEl = modal.querySelector("#ftp-modal-status");
+  const cancelBtn = modal.querySelector("#ftp-modal-cancel");
+  const connectBtn = modal.querySelector("#ftp-modal-connect");
 
-  cancelBtn.addEventListener('click', () => modal.remove());
-  modal.addEventListener('click', (e) => {
+  cancelBtn.addEventListener("click", () => modal.remove());
+  modal.addEventListener("click", (e) => {
     if (e.target === modal) modal.remove();
   });
 
   const doConnect = async () => {
-    let rawHost = (hostInput.value || '').trim().replace(/^ftp:\/\//i, '');
+    let rawHost = (hostInput.value || "").trim().replace(/^ftp:\/\//i, "");
     let port = parseInt(portInput.value, 10) || 21;
 
     // Handle full URL pasted into host input
-    if (rawHost.includes(':')) {
-      const parts = rawHost.split(':');
+    if (rawHost.includes(":")) {
+      const parts = rawHost.split(":");
       rawHost = parts[0];
       port = parseInt(parts[1], 10) || port;
     }
-    if (rawHost.includes('/')) {
-      rawHost = rawHost.split('/')[0];
+    if (rawHost.includes("/")) {
+      rawHost = rawHost.split("/")[0];
     }
 
-    if (!rawHost || rawHost.endsWith('.')) {
-      statusEl.style.color = '#ff6b6b';
-      statusEl.textContent = 'Please finish entering a complete IP address (e.g. 192.168.1.110)';
-      statusEl.style.display = 'block';
+    if (!rawHost || rawHost.endsWith(".")) {
+      statusEl.style.color = "#ff6b6b";
+      statusEl.textContent =
+        "Please finish entering a complete IP address (e.g. 192.168.1.110)";
+      statusEl.style.display = "block";
       return;
     }
 
-    statusEl.style.color = 'var(--text-muted)';
-    statusEl.style.background = 'rgba(255,255,255,0.05)';
-    statusEl.style.borderColor = 'rgba(255,255,255,0.1)';
-    statusEl.textContent = 'Testing connection to ' + rawHost + ':' + port + '...';
-    statusEl.style.display = 'block';
+    statusEl.style.color = "var(--text-muted)";
+    statusEl.style.background = "rgba(255,255,255,0.05)";
+    statusEl.style.borderColor = "rgba(255,255,255,0.1)";
+    statusEl.textContent =
+      "Testing connection to " + rawHost + ":" + port + "...";
+    statusEl.style.display = "block";
     connectBtn.disabled = true;
 
     try {
@@ -3377,10 +3467,10 @@ function openFtpModal() {
       });
 
       if (!res.ok) {
-        statusEl.style.color = '#ff6b6b';
-        statusEl.style.background = 'rgba(255, 107, 107, 0.1)';
-        statusEl.style.borderColor = 'rgba(255, 107, 107, 0.2)';
-        statusEl.textContent = res.error || 'Connection failed';
+        statusEl.style.color = "#ff6b6b";
+        statusEl.style.background = "rgba(255, 107, 107, 0.1)";
+        statusEl.style.borderColor = "rgba(255, 107, 107, 0.2)";
+        statusEl.textContent = res.error || "Connection failed";
         connectBtn.disabled = false;
         return;
       }
@@ -3389,22 +3479,28 @@ function openFtpModal() {
       await loadExplorerDevices();
       selectExplorerDevice(res.device.id, `ftp://${res.device.id}/`);
     } catch (err) {
-      statusEl.style.color = '#ff6b6b';
-      statusEl.style.background = 'rgba(255, 107, 107, 0.1)';
-      statusEl.style.borderColor = 'rgba(255, 107, 107, 0.2)';
-      statusEl.textContent = 'Error: ' + err.message;
+      statusEl.style.color = "#ff6b6b";
+      statusEl.style.background = "rgba(255, 107, 107, 0.1)";
+      statusEl.style.borderColor = "rgba(255, 107, 107, 0.2)";
+      statusEl.textContent = "Error: " + err.message;
       connectBtn.disabled = false;
     }
   };
 
-  connectBtn.addEventListener('click', doConnect);
-  hostInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doConnect(); });
-  portInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doConnect(); });
-  passInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doConnect(); });
+  connectBtn.addEventListener("click", doConnect);
+  hostInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doConnect();
+  });
+  portInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doConnect();
+  });
+  passInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doConnect();
+  });
 }
 
 function selectExplorerDevice(deviceId, rootPath) {
-  console.log('[Explorer] Selecting device:', deviceId, rootPath);
+  console.log("[Explorer] Selecting device:", deviceId, rootPath);
   explorerState.currentDeviceId = deviceId;
   explorerState.historyStack = [];
   renderExplorerDevicesBar();
@@ -3414,10 +3510,12 @@ function selectExplorerDevice(deviceId, rootPath) {
 }
 
 async function loadExplorerDirectory(deviceId, path) {
-  console.log('[Explorer] loadExplorerDirectory:', { deviceId, path });
+  console.log("[Explorer] loadExplorerDirectory:", { deviceId, path });
   const listEl = document.getElementById("explorer-list");
   if (listEl) {
-    listEl.innerHTML = Array.from({ length: 6 }).map(() => `
+    listEl.innerHTML = Array.from({ length: 6 })
+      .map(
+        () => `
       <div class="skeleton-row">
         <div class="skeleton-shimmer" style="width: 22px; height: 22px; border-radius: 4px; flex-shrink: 0;"></div>
         <div class="skeleton-shimmer" style="width: ${Math.floor(Math.random() * 40 + 35)}%; height: 16px;"></div>
@@ -3425,11 +3523,18 @@ async function loadExplorerDirectory(deviceId, path) {
         <div class="skeleton-shimmer" style="width: 60px; height: 14px;"></div>
         <div class="skeleton-shimmer" style="width: 90px; height: 14px; margin-left: 24px;"></div>
       </div>
-    `).join('');
+    `,
+      )
+      .join("");
   }
   try {
     const res = await window.lanbeam.explorer.listDirectory({ deviceId, path });
-    console.log('[Explorer] listDirectory returned:', res.currentPath, res.items?.length, 'items');
+    console.log(
+      "[Explorer] listDirectory returned:",
+      res.currentPath,
+      res.items?.length,
+      "items",
+    );
     explorerState.currentPath = res.currentPath;
     explorerState.items = res.items;
     explorerState.devicePaths[deviceId] = res.currentPath; // remember for next switch
@@ -3437,35 +3542,44 @@ async function loadExplorerDirectory(deviceId, path) {
     const sInput = document.getElementById("explorer-search-input");
     const cBtn = document.getElementById("explorer-search-clear-btn");
     if (sInput && sInput.value) {
-      sInput.value = '';
-      if (cBtn) cBtn.style.display = 'none';
+      sInput.value = "";
+      if (cBtn) cBtn.style.display = "none";
     }
 
     renderExplorerBreadcrumbs(res.currentPath);
     renderExplorerList(res.items);
   } catch (err) {
-    console.error('[Explorer] listDirectory failed:', err);
+    console.error("[Explorer] listDirectory failed:", err);
     if (listEl) {
-      let rawMsg = err.message || '';
+      let rawMsg = err.message || "";
       let cleanMsg = rawMsg;
-      let hint = '';
+      let hint = "";
 
-      if (rawMsg.includes('ECONNREFUSED')) {
-        cleanMsg = 'Connection refused by phone FTP server.';
-        hint = 'Make sure the FTP Server or File Manager on your phone is turned ON and listening on the expected port.';
-      } else if (rawMsg.includes('Authentication failed') || rawMsg.includes('530')) {
-        cleanMsg = 'Authentication failed (Incorrect Username or Password).';
-        hint = 'Disconnect this tab (click ×) and reconnect with the correct credentials, or enable anonymous login on your phone.';
-      } else if (rawMsg.includes('ETIMEDOUT') || rawMsg.includes('EHOSTUNREACH')) {
-        cleanMsg = 'Phone unreachable on the local network.';
-        hint = 'Verify that both your PC and phone are connected to the exact same Wi-Fi network.';
+      if (rawMsg.includes("ECONNREFUSED")) {
+        cleanMsg = "Connection refused by phone FTP server.";
+        hint =
+          "Make sure the FTP Server or File Manager on your phone is turned ON and listening on the expected port.";
+      } else if (
+        rawMsg.includes("Authentication failed") ||
+        rawMsg.includes("530")
+      ) {
+        cleanMsg = "Authentication failed (Incorrect Username or Password).";
+        hint =
+          "Disconnect this tab (click ×) and reconnect with the correct credentials, or enable anonymous login on your phone.";
+      } else if (
+        rawMsg.includes("ETIMEDOUT") ||
+        rawMsg.includes("EHOSTUNREACH")
+      ) {
+        cleanMsg = "Phone unreachable on the local network.";
+        hint =
+          "Verify that both your PC and phone are connected to the exact same Wi-Fi network.";
       }
 
       listEl.innerHTML = `
         <div style="padding: 40px 20px; text-align: center; max-width: 480px; margin: 0 auto;">
           <div style="font-size: 32px; margin-bottom: 12px; opacity: 0.85;">⚠️</div>
           <div style="font-size: 15px; font-weight: 600; color: #ff6b6b; margin-bottom: 6px;">${escapeHtml(cleanMsg)}</div>
-          ${hint ? `<div style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 16px;">${escapeHtml(hint)}</div>` : ''}
+          ${hint ? `<div style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 16px;">${escapeHtml(hint)}</div>` : ""}
           <div style="display: flex; justify-content: center; gap: 10px;">
             <button class="modal-btn" onclick="refreshExplorer()" style="padding: 6px 16px;">Retry Connection</button>
             <button class="modal-btn" onclick="openFtpModal()" style="padding: 6px 16px; border-color: var(--accent-color); color: var(--accent-color);">Edit / Reconnect</button>
@@ -3477,12 +3591,12 @@ async function loadExplorerDirectory(deviceId, path) {
 }
 
 async function triggerExplorerSearch(query) {
-  console.log('[Explorer] triggerExplorerSearch:', {
+  console.log("[Explorer] triggerExplorerSearch:", {
     query,
     scope: explorerState.searchScope,
     currentPath: explorerState.currentPath,
     currentDeviceId: explorerState.currentDeviceId,
-    inMemoryCount: explorerState.items?.length
+    inMemoryCount: explorerState.items?.length,
   });
 
   const listEl = document.getElementById("explorer-list");
@@ -3492,16 +3606,26 @@ async function triggerExplorerSearch(query) {
   }
 
   // Instant in-memory filter if folder scope and items are loaded
-  if (explorerState.searchScope === 'folder' && explorerState.items && explorerState.items.length > 0) {
+  if (
+    explorerState.searchScope === "folder" &&
+    explorerState.items &&
+    explorerState.items.length > 0
+  ) {
     const q = query.toLowerCase();
-    const localMatches = explorerState.items.filter(it => it.name.toLowerCase().includes(q));
-    console.log('[Explorer] In-folder filter matched:', localMatches.length, 'items');
+    const localMatches = explorerState.items.filter((it) =>
+      it.name.toLowerCase().includes(q),
+    );
+    console.log(
+      "[Explorer] In-folder filter matched:",
+      localMatches.length,
+      "items",
+    );
     renderExplorerList(localMatches);
     return;
   }
 
   if (listEl) {
-    listEl.innerHTML = `<div style="padding: 24px; text-align: center; color: var(--text-muted);"><span style="display:inline-block; animation: spinRefresh 0.75s linear infinite; margin-right: 8px;">⏳</span>Searching ${explorerState.searchScope === 'drive' ? 'drive' : 'folder'} for "${escapeHtml(query)}"...</div>`;
+    listEl.innerHTML = `<div style="padding: 24px; text-align: center; color: var(--text-muted);"><span style="display:inline-block; animation: spinRefresh 0.75s linear infinite; margin-right: 8px;">⏳</span>Searching ${explorerState.searchScope === "drive" ? "drive" : "folder"} for "${escapeHtml(query)}"...</div>`;
   }
 
   try {
@@ -3511,7 +3635,11 @@ async function triggerExplorerSearch(query) {
       query: query,
       deviceId: explorerState.currentDeviceId,
     });
-    console.log('[Explorer] Search backend returned:', results?.length, 'results');
+    console.log(
+      "[Explorer] Search backend returned:",
+      results?.length,
+      "results",
+    );
     renderExplorerList(results || []);
     if (!results || results.length === 0) {
       if (listEl) {
@@ -3519,7 +3647,7 @@ async function triggerExplorerSearch(query) {
       }
     }
   } catch (err) {
-    console.error('[Explorer] Search error:', err);
+    console.error("[Explorer] Search error:", err);
     if (listEl) {
       listEl.innerHTML = `<div style="padding: 24px; text-align: center; color: #ff6b6b;">Search error: ${escapeHtml(err.message)}</div>`;
     }
@@ -3527,20 +3655,20 @@ async function triggerExplorerSearch(query) {
 }
 
 function renderExplorerBreadcrumbs(currentPath) {
-  const bc = document.getElementById('explorer-breadcrumbs');
+  const bc = document.getElementById("explorer-breadcrumbs");
   if (!bc) return;
-  bc.innerHTML = '';
+  bc.innerHTML = "";
 
-  const isPhone = currentPath.startsWith('phone://');
-  const isFtp = currentPath.startsWith('ftp://');
+  const isPhone = currentPath.startsWith("phone://");
+  const isFtp = currentPath.startsWith("ftp://");
   let segments = [];
   if (isFtp) {
     // e.g. ftp://ftp-192_168_1_50-2121/foo/bar
-    const afterScheme = currentPath.replace(/^ftp:\/\//, '');
-    const parts = afterScheme.split('/').filter(Boolean);
-    const devId = parts[0] || 'ftp';
+    const afterScheme = currentPath.replace(/^ftp:\/\//, "");
+    const parts = afterScheme.split("/").filter(Boolean);
+    const devId = parts[0] || "ftp";
     const subParts = parts.slice(1);
-    segments = ['FTP', ...subParts];
+    segments = ["FTP", ...subParts];
   } else {
     segments = currentPath.split(/[\\/]/).filter(Boolean);
   }
@@ -3548,50 +3676,158 @@ function renderExplorerBreadcrumbs(currentPath) {
   const A = 12;
   const COLLAPSE_THRESHOLD = 4; // collapse if more than this many segments
 
-  const poly = (first, last, a) => {
-    if (first && last) return 'none';
-    const tip = `calc(100% - ${a}px) 0%, 100% 50%, calc(100% - ${a}px) 100%`;
-    const notch = `${a}px 100%, 0% 50%, ${a}px 0%`;
-    if (first) return `polygon(0% 0%, calc(100% - ${a}px) 0%, 100% 50%, calc(100% - ${a}px) 100%, 0% 100%)`;
-    if (last) return `polygon(${a}px 0%, 100% 0%, 100% 100%, ${a}px 100%, 0% 50%)`;
-    return `polygon(${a}px 0%, ${tip}, ${notch})`;
+  const SW = 1.5;
+  const roundedPoly = (pts, radii) => {
+    const n = pts.length;
+    let d = "";
+    for (let i = 0; i < n; i++) {
+      const p0 = pts[(i + n - 1) % n],
+        p1 = pts[i],
+        p2 = pts[(i + 1) % n];
+      const v1 = [p0[0] - p1[0], p0[1] - p1[1]],
+        v2 = [p2[0] - p1[0], p2[1] - p1[1]];
+      const l1 = Math.hypot(...v1),
+        l2 = Math.hypot(...v2);
+      const r = Math.min(radii[i], l1 / 2, l2 / 2);
+      const a = [p1[0] + (v1[0] / l1) * r, p1[1] + (v1[1] / l1) * r];
+      const b = [p1[0] + (v2[0] / l2) * r, p1[1] + (v2[1] / l2) * r];
+      const k = 0.5523;
+      const c1 = [a[0] + (p1[0] - a[0]) * k, a[1] + (p1[1] - a[1]) * k];
+      const c2 = [b[0] + (p1[0] - b[0]) * k, b[1] + (p1[1] - b[1]) * k];
+      d +=
+        (i ? "L" : "M") +
+        a[0] +
+        " " +
+        a[1] +
+        "C" +
+        c1[0] +
+        " " +
+        c1[1] +
+        " " +
+        c2[0] +
+        " " +
+        c2[1] +
+        " " +
+        b[0] +
+        " " +
+        b[1];
+    }
+    return d + "Z";
   };
 
-  const svg = (d) => `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
-  const ICON_TERM = 'M4 17 10 11 4 5M12 19h8';
-  const ICON_PHONE = 'M8 2h8M5 2h14a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm7 16v.01';
-  const ICON_FOLDER = 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z';
+  const attachShape = (el, first, last) => {
+    const NS = "http://www.w3.org/2000/svg";
+    const sv = document.createElementNS(NS, "svg");
+    sv.setAttribute("class", "pl-shape");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("stroke-width", SW);
+    path.setAttribute("stroke-linejoin", "round");
+    sv.appendChild(path);
+    el.insertBefore(sv, el.firstChild);
+    const draw = () => {
+      const w = el.offsetWidth,
+        h = el.offsetHeight;
+      if (!w || !h) return;
+      const o = SW / 2,
+        x0 = o,
+        y0 = o,
+        x1 = w - o,
+        y1 = h - o,
+        ym = h / 2;
+      const T = 3.5,
+        P = (h - SW) / 2;
+      let pts, rad;
+      if (first && last) {
+        pts = [
+          [x0, y0],
+          [x1, y0],
+          [x1, y1],
+          [x0, y1],
+        ];
+        rad = [P, P, P, P];
+      } else if (first) {
+        pts = [
+          [x0, y0],
+          [x1 - A, y0],
+          [x1, ym],
+          [x1 - A, y1],
+          [x0, y1],
+        ];
+        rad = [P, T, T, T, P];
+      } else if (last) {
+        pts = [
+          [x0 + A, y0],
+          [x1, y0],
+          [x1, y1],
+          [x0 + A, y1],
+          [x0, ym],
+        ];
+        rad = [T, P, P, T, T];
+      } else {
+        pts = [
+          [x0 + A, y0],
+          [x1 - A, y0],
+          [x1, ym],
+          [x1 - A, y1],
+          [x0 + A, y1],
+          [x0, ym],
+        ];
+        rad = [T, T, T, T, T, T];
+      }
+      path.setAttribute("d", roundedPoly(pts, rad));
+    };
+    draw();
+    new ResizeObserver(draw).observe(el);
+  };
+
+  const svg = (d) =>
+    `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+  const ICON_TERM = "M4 17 10 11 4 5M12 19h8";
+  const ICON_PHONE =
+    "M8 2h8M5 2h14a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm7 16v.01";
+  const ICON_FOLDER =
+    "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z";
 
   // Build path for a given segment index
   const getTargetPath = (idx) => {
     if (isFtp) {
       if (idx === 0) return `ftp://${explorerState.currentDeviceId}/`;
-      const sub = segments.slice(1, idx + 1).join('/');
+      const sub = segments.slice(1, idx + 1).join("/");
       return `ftp://${explorerState.currentDeviceId}/${sub}`;
     }
-    if (isPhone) return 'phone://' + segments.slice(0, idx + 1).join('/');
-    if (idx === 0) return segments[0].endsWith(':') ? segments[0] + '\\' : segments[0];
-    const root = segments[0].endsWith(':') ? segments[0] + '\\' : segments[0];
-    return root + segments.slice(1, idx + 1).join('\\');
+    if (isPhone) return "phone://" + segments.slice(0, idx + 1).join("/");
+    if (idx === 0)
+      return segments[0].endsWith(":") ? segments[0] + "\\" : segments[0];
+    const root = segments[0].endsWith(":") ? segments[0] + "\\" : segments[0];
+    return root + segments.slice(1, idx + 1).join("\\");
   };
 
   const makeSeg = (seg, idx, isFirst, isLast) => {
-    const segColor = isLast ? 'var(--accent-color)' : 'rgba(235, 240, 245, 0.45)';
-    const textColor = isLast ? 'var(--accent-color)' : 'var(--text-primary, #ffffff)';
-    const el = document.createElement('div');
-    el.className = 'pl-seg' + (isFirst ? ' pl-seg-first' : '') + (isLast ? ' pl-seg-last' : '');
-    el.style.setProperty('--pl-c', segColor);
-    el.style.setProperty('--pl-text', textColor);
-    el.style.setProperty('--pl-clip', poly(isFirst, isLast, A));
-    el.style.setProperty('--pl-clip-in', poly(isFirst, isLast, A - 1));
-    let icon = '';
+    const segColor = isLast
+      ? "var(--accent-color)"
+      : "rgba(235, 240, 245, 0.45)";
+    const textColor = isLast
+      ? "var(--accent-color)"
+      : "var(--text-primary, #ffffff)";
+    const el = document.createElement("div");
+    el.className =
+      "pl-seg" +
+      (isFirst ? " pl-seg-first" : "") +
+      (isLast ? " pl-seg-last" : "");
+    el.style.setProperty("--pl-c", segColor);
+    el.style.setProperty("--pl-text", textColor);
+    let icon = "";
     if (isFirst) icon = svg(isPhone || isFtp ? ICON_PHONE : ICON_TERM);
     else if (isLast) icon = svg(ICON_FOLDER);
-    el.innerHTML = `<span class="pl-in">${icon ? `<span class="pl-seg-icon">${icon}</span>` : ''}<span class="pl-seg-label">${escapeHtml(seg)}</span></span>`;
-    el.addEventListener('click', () => {
+    el.innerHTML = `<span class="pl-in">${icon ? `<span class="pl-seg-icon">${icon}</span>` : ""}<span class="pl-seg-label">${escapeHtml(seg)}</span></span>`;
+    attachShape(el, isFirst, isLast);
+    el.addEventListener("click", () => {
       if (!isLast) {
         explorerState.historyStack.push(explorerState.currentPath);
-        loadExplorerDirectory(explorerState.currentDeviceId, getTargetPath(idx));
+        loadExplorerDirectory(
+          explorerState.currentDeviceId,
+          getTargetPath(idx),
+        );
       }
     });
     return el;
@@ -3611,19 +3847,18 @@ function renderExplorerBreadcrumbs(currentPath) {
     const hiddenStart = 1;
     const hiddenEnd = segments.length - 2; // exclusive: hide segments 1..n-3
 
-    const ellipsisSeg = document.createElement('div');
-    ellipsisSeg.className = 'pl-seg pl-seg-ellipsis';
-    ellipsisSeg.style.setProperty('--pl-c', 'rgba(235, 240, 245, 0.35)');
-    ellipsisSeg.style.setProperty('--pl-text', 'var(--text-muted)');
-    ellipsisSeg.style.setProperty('--pl-clip', poly(false, false, A));
-    ellipsisSeg.style.setProperty('--pl-clip-in', poly(false, false, A - 1));
+    const ellipsisSeg = document.createElement("div");
+    ellipsisSeg.className = "pl-seg pl-seg-ellipsis";
+    ellipsisSeg.style.setProperty("--pl-c", "rgba(235, 240, 245, 0.35)");
+    ellipsisSeg.style.setProperty("--pl-text", "var(--text-muted)");
     ellipsisSeg.innerHTML = `<span class="pl-in"><span class="pl-seg-label">…</span></span>`;
-    ellipsisSeg.style.cursor = 'pointer';
-    ellipsisSeg.style.position = 'relative';
+    attachShape(ellipsisSeg, false, false);
+    ellipsisSeg.style.cursor = "pointer";
+    ellipsisSeg.style.position = "relative";
 
     // Build dropdown
-    const dropdown = document.createElement('div');
-    dropdown.className = 'pl-ellipsis-dropdown';
+    const dropdown = document.createElement("div");
+    dropdown.className = "pl-ellipsis-dropdown";
     dropdown.style.cssText = `
       display: none;
       position: absolute;
@@ -3639,7 +3874,7 @@ function renderExplorerBreadcrumbs(currentPath) {
     `;
 
     for (let i = hiddenStart; i <= hiddenEnd; i++) {
-      const item = document.createElement('div');
+      const item = document.createElement("div");
       item.style.cssText = `
         display: flex; align-items: center; gap: 8px;
         padding: 6px 10px; border-radius: 6px; cursor: pointer;
@@ -3647,11 +3882,14 @@ function renderExplorerBreadcrumbs(currentPath) {
         color: var(--text-primary); white-space: nowrap;
       `;
       item.innerHTML = `<span style="opacity:0.5">${svg(ICON_FOLDER)}</span>${escapeHtml(segments[i])}`;
-      item.addEventListener('mouseover', () => item.style.background = 'rgba(255,255,255,0.07)');
-      item.addEventListener('mouseout', () => item.style.background = '');
-      item.addEventListener('click', (e) => {
+      item.addEventListener(
+        "mouseover",
+        () => (item.style.background = "rgba(255,255,255,0.07)"),
+      );
+      item.addEventListener("mouseout", () => (item.style.background = ""));
+      item.addEventListener("click", (e) => {
         e.stopPropagation();
-        dropdown.style.display = 'none';
+        dropdown.style.display = "none";
         explorerState.historyStack.push(explorerState.currentPath);
         loadExplorerDirectory(explorerState.currentDeviceId, getTargetPath(i));
       });
@@ -3659,22 +3897,37 @@ function renderExplorerBreadcrumbs(currentPath) {
     }
 
     ellipsisSeg.appendChild(dropdown);
-    ellipsisSeg.addEventListener('click', (e) => {
+    ellipsisSeg.addEventListener("click", (e) => {
       e.stopPropagation();
-      dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+      dropdown.style.display =
+        dropdown.style.display === "none" ? "block" : "none";
     });
-    document.addEventListener('click', () => { dropdown.style.display = 'none'; }, { capture: false });
+    document.addEventListener(
+      "click",
+      () => {
+        dropdown.style.display = "none";
+      },
+      { capture: false },
+    );
     bc.appendChild(ellipsisSeg);
 
     // parent (second-to-last)
     if (segments.length >= 3) {
-      bc.appendChild(makeSeg(segments[segments.length - 2], segments.length - 2, false, false));
+      bc.appendChild(
+        makeSeg(
+          segments[segments.length - 2],
+          segments.length - 2,
+          false,
+          false,
+        ),
+      );
     }
     // current (last)
-    bc.appendChild(makeSeg(segments[segments.length - 1], segments.length - 1, false, true));
+    bc.appendChild(
+      makeSeg(segments[segments.length - 1], segments.length - 1, false, true),
+    );
   }
 }
-
 
 function showTransferTargetModal(item, sourceDeviceId) {
   const existing = document.getElementById("explorer-transfer-modal");
@@ -3685,15 +3938,19 @@ function showTransferTargetModal(item, sourceDeviceId) {
   modal.id = "explorer-transfer-modal";
   modal.className = "modal-overlay open";
 
-  const sizeText = item.size ? formatBytes(item.size) : '';
+  const sizeText = item.size ? formatBytes(item.size) : "";
 
   // Identify connected target devices
-  const ftpDevices = explorerState.devices.filter(d => d.id.startsWith("ftp-"));
-  const pcDevices = explorerState.devices.filter(d => !d.id.startsWith("ftp-"));
+  const ftpDevices = explorerState.devices.filter((d) =>
+    d.id.startsWith("ftp-"),
+  );
+  const pcDevices = explorerState.devices.filter(
+    (d) => !d.id.startsWith("ftp-"),
+  );
   const firstFtp = ftpDevices[0];
-  const firstPc = pcDevices[0] || { id: 'pc-c' };
+  const firstPc = pcDevices[0] || { id: "pc-c" };
 
-  let targetOptionsHtml = '';
+  let targetOptionsHtml = "";
 
   if (isFromFtp) {
     // === FROM FTP STORAGE ===
@@ -3701,7 +3958,7 @@ function showTransferTargetModal(item, sourceDeviceId) {
     // Priority 2: Custom PC Folder picker (Browse...)
     targetOptionsHtml = `
       <!-- Option 1: Default LANBeam Folder -->
-      <div id="transfer-opt-primary" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: rgba(255, 170, 0, 0.08); border: 1px solid var(--accent-color); border-radius: 12px; cursor: pointer; transition: transform 0.15s, background 0.15s;">
+      <div id="transfer-opt-primary" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: rgba(var(--accent-rgb), 0.08); border: 1px solid var(--accent-color); border-radius: 12px; cursor: pointer; transition: transform 0.15s, background 0.15s;">
         <div style="display: flex; align-items: center; gap: 12px;">
           <span style="font-size: 24px;">📥</span>
           <div>
@@ -3728,12 +3985,16 @@ function showTransferTargetModal(item, sourceDeviceId) {
     // === FROM PC DRIVE ===
     // Priority 1: Send directly to Connected Phone FTP Storage
     // Priority 2: Custom PC Folder picker (Browse...)
-    const ftpTitle = firstFtp ? `Send to ${escapeHtml(firstFtp.name)}` : 'Send to Phone FTP';
-    const ftpSub = firstFtp ? 'Uploads directly to connected phone storage' : 'No phone FTP connected yet (connect from + Add FTP)';
+    const ftpTitle = firstFtp
+      ? `Send to ${escapeHtml(firstFtp.name)}`
+      : "Send to Phone FTP";
+    const ftpSub = firstFtp
+      ? "Uploads directly to connected phone storage"
+      : "No phone FTP connected yet (connect from + Add FTP)";
 
     targetOptionsHtml = `
       <!-- Option 1: Send to Phone FTP (Priority) -->
-      <div id="transfer-opt-primary" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: ${firstFtp ? 'rgba(255, 170, 0, 0.08)' : 'rgba(255,255,255,0.03)'}; border: 1px solid ${firstFtp ? 'var(--accent-color)' : 'rgba(255,255,255,0.1)'}; border-radius: 12px; cursor: ${firstFtp ? 'pointer' : 'default'}; transition: transform 0.15s, background 0.15s;">
+      <div id="transfer-opt-primary" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: ${firstFtp ? "rgba(var(--accent-rgb), 0.08)" : "rgba(255,255,255,0.03)"}; border: 1px solid ${firstFtp ? "var(--accent-color)" : "rgba(255,255,255,0.1)"}; border-radius: 12px; cursor: ${firstFtp ? "pointer" : "default"}; transition: transform 0.15s, background 0.15s;">
         <div style="display: flex; align-items: center; gap: 12px;">
           <span style="font-size: 24px;">📱</span>
           <div>
@@ -3741,7 +4002,7 @@ function showTransferTargetModal(item, sourceDeviceId) {
             <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${ftpSub}</div>
           </div>
         </div>
-        <span style="font-size: 13px; color: ${firstFtp ? 'var(--accent-color)' : 'var(--text-muted)'}; font-weight: 600;">${firstFtp ? 'Send →' : 'Offline'}</span>
+        <span style="font-size: 13px; color: ${firstFtp ? "var(--accent-color)" : "var(--text-muted)"}; font-weight: 600;">${firstFtp ? "Send →" : "Offline"}</span>
       </div>
 
       <!-- Option 2: Copy to another PC folder -->
@@ -3759,22 +4020,22 @@ function showTransferTargetModal(item, sourceDeviceId) {
   }
 
   modal.innerHTML = `
-    <div class="modal-card" style="max-width: 520px; width: 92vw; text-align: left; padding: 24px; border: 1px solid rgba(255, 170, 0, 0.25); border-radius: 16px; background: #0d0e12; box-shadow: 0 20px 48px rgba(0,0,0,0.85);">
+    <div class="modal-card" style="max-width: 520px; width: 92vw; text-align: left; padding: 24px; border: 1px solid rgba(var(--accent-rgb), 0.25); border-radius: 16px; background: #0d0e12; box-shadow: 0 20px 48px rgba(0,0,0,0.85);">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
         <div style="display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; color: #fff;">
-          <span style="display: inline-flex; width: 32px; height: 32px; border-radius: 8px; background: rgba(255, 170, 0, 0.12); align-items: center; justify-content: center; color: var(--accent-color);">
+          <span style="display: inline-flex; width: 32px; height: 32px; border-radius: 8px; background: rgba(var(--accent-rgb), 0.12); align-items: center; justify-content: center; color: var(--accent-color);">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
           </span>
-          Transfer ${item.isDirectory ? 'Folder' : 'File'}
+          Transfer ${item.isDirectory ? "Folder" : "File"}
         </div>
         <button type="button" id="transfer-modal-close" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 18px; padding: 4px;">✕</button>
       </div>
 
       <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px 14px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
-        <span style="font-size: 22px;">${item.isDirectory ? '📁' : '📄'}</span>
+        <span style="font-size: 22px;">${item.isDirectory ? "📁" : "📄"}</span>
         <div style="flex: 1; min-width: 0;">
           <div style="font-weight: 600; font-size: 13px; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(item.name)}</div>
-          ${sizeText ? `<div style="font-size: 11px; color: var(--accent-color); margin-top: 2px;">${sizeText}</div>` : ''}
+          ${sizeText ? `<div style="font-size: 11px; color: var(--accent-color); margin-top: 2px;">${sizeText}</div>` : ""}
         </div>
       </div>
 
@@ -3788,36 +4049,41 @@ function showTransferTargetModal(item, sourceDeviceId) {
 
   document.body.appendChild(modal);
 
-  const primaryBtn = modal.querySelector('#transfer-opt-primary');
-  const browseBtn = modal.querySelector('#transfer-opt-browse');
-  const closeBtn = modal.querySelector('#transfer-modal-close');
-  const pathSubEl = modal.querySelector('#transfer-opt-path-sub');
-  const errorEl = modal.querySelector('#transfer-modal-error');
+  const primaryBtn = modal.querySelector("#transfer-opt-primary");
+  const browseBtn = modal.querySelector("#transfer-opt-browse");
+  const closeBtn = modal.querySelector("#transfer-modal-close");
+  const pathSubEl = modal.querySelector("#transfer-opt-path-sub");
+  const errorEl = modal.querySelector("#transfer-modal-error");
 
   let defaultDir = state.settings?.downloadDir || "";
-  window.lanbeam.transfer?.defaultDownloadDir?.().then(dir => {
+  window.lanbeam.transfer?.defaultDownloadDir?.().then((dir) => {
     if (!defaultDir) defaultDir = dir;
-    if (pathSubEl) pathSubEl.textContent = defaultDir || 'Downloads\\LANBeam';
+    if (pathSubEl) pathSubEl.textContent = defaultDir || "Downloads\\LANBeam";
   });
 
   const closeModal = () => modal.remove();
-  closeBtn?.addEventListener('click', closeModal);
-  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  closeBtn?.addEventListener("click", closeModal);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeModal();
+  });
 
   const executeTransfer = async (targetDir, targetDeviceId) => {
     modal.remove();
-    const isOut = !sourceDeviceId.startsWith('ftp-');
-    const tid = 'ftp-transfer-active';
-    updateTransferCard({
-      fileId: tid,
-      fileName: item.name,
-      totalBytes: item.size || 0,
-      bytesTransferred: 0,
-      peerName: isOut ? (firstFtp?.name || 'Phone Storage') : 'Phone Storage',
-      throughputMbps: 0,
-      etaMs: 0,
-      sparkline: []
-    }, isOut ? 'out' : 'in');
+    const isOut = !sourceDeviceId.startsWith("ftp-");
+    const tid = "ftp-transfer-active";
+    updateTransferCard(
+      {
+        fileId: tid,
+        fileName: item.name,
+        totalBytes: item.size || 0,
+        bytesTransferred: 0,
+        peerName: isOut ? firstFtp?.name || "Phone Storage" : "Phone Storage",
+        throughputMbps: 0,
+        etaMs: 0,
+        sparkline: [],
+      },
+      isOut ? "out" : "in",
+    );
 
     try {
       const res = await window.lanbeam.explorer.transfer({
@@ -3838,38 +4104,210 @@ function showTransferTargetModal(item, sourceDeviceId) {
 
   if (isFromFtp) {
     // 1. FTP -> Default PC folder
-    primaryBtn?.addEventListener('click', () => {
+    primaryBtn?.addEventListener("click", () => {
       executeTransfer(defaultDir || "C:\\", firstPc.id);
     });
     // 2. FTP -> Pick PC folder
-    browseBtn?.addEventListener('click', async () => {
+    browseBtn?.addEventListener("click", async () => {
       try {
         const picked = await window.lanbeam.transfer.pickDownloadDir();
         if (picked) executeTransfer(picked, firstPc.id);
       } catch (err) {
-        if (errorEl) { errorEl.textContent = 'Browse failed: ' + err.message; errorEl.style.display = 'block'; }
+        if (errorEl) {
+          errorEl.textContent = "Browse failed: " + err.message;
+          errorEl.style.display = "block";
+        }
       }
     });
   } else {
     // 1. PC -> Phone FTP (Priority)
-    primaryBtn?.addEventListener('click', () => {
+    primaryBtn?.addEventListener("click", () => {
       if (!firstFtp) {
         openFtpModal();
         return;
       }
-      const remoteDir = explorerState.devicePaths[firstFtp.id] || firstFtp.rootPath || '/';
+      const remoteDir =
+        explorerState.devicePaths[firstFtp.id] || firstFtp.rootPath || "/";
       executeTransfer(remoteDir, firstFtp.id);
     });
     // 2. PC -> Another PC folder
-    browseBtn?.addEventListener('click', async () => {
+    browseBtn?.addEventListener("click", async () => {
       try {
         const picked = await window.lanbeam.transfer.pickDownloadDir();
         if (picked) executeTransfer(picked, firstPc.id);
       } catch (err) {
-        if (errorEl) { errorEl.textContent = 'Browse failed: ' + err.message; errorEl.style.display = 'block'; }
+        if (errorEl) {
+          errorEl.textContent = "Browse failed: " + err.message;
+          errorEl.style.display = "block";
+        }
       }
     });
   }
+}
+
+
+function updateExplorerSelectionUI() {
+  const listEl = document.getElementById("explorer-list");
+  if (!listEl) return;
+  const rows = listEl.querySelectorAll(".explorer-row");
+  rows.forEach((r) => {
+    const itemPath = r.getAttribute("data-item-path");
+    if (explorerState.selectedPaths.has(itemPath)) {
+      r.classList.add("selected");
+    } else {
+      r.classList.remove("selected");
+    }
+  });
+
+  let bar = document.getElementById("explorer-batch-bar");
+  const count = explorerState.selectedPaths.size;
+  if (!bar && count > 0) {
+    bar = document.createElement("div");
+    bar.id = "explorer-batch-bar";
+    bar.className = "explorer-batch-bar";
+    bar.innerHTML = `
+      <div class="explorer-batch-count">
+        <span class="explorer-batch-count-badge" id="explorer-batch-count-num">0</span>
+        <span>Selected</span>
+      </div>
+      <button type="button" class="explorer-batch-btn-transfer" id="explorer-batch-transfer-btn">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        Transfer Selected
+      </button>
+      <button type="button" class="explorer-batch-btn-clear" id="explorer-batch-clear-btn">Deselect</button>
+    `;
+    const expBody = document.querySelector(".explorer-body") || document.body;
+    expBody.appendChild(bar);
+
+    bar.querySelector("#explorer-batch-clear-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      explorerState.selectedPaths.clear();
+      updateExplorerSelectionUI();
+    });
+
+    bar.querySelector("#explorer-batch-transfer-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const selectedItems = explorerState.items.filter((it) => explorerState.selectedPaths.has(it.path));
+      if (selectedItems.length > 0) {
+        showBatchTransferTargetModal(selectedItems, explorerState.currentDeviceId);
+      }
+    });
+  }
+
+  if (bar) {
+    const badge = bar.querySelector("#explorer-batch-count-num");
+    if (badge) badge.textContent = count;
+    if (count > 0) {
+      bar.classList.add("active");
+    } else {
+      bar.classList.remove("active");
+    }
+  }
+}
+
+function initExplorerLasso() {
+  const listEl = document.getElementById("explorer-list");
+  if (!listEl || listEl._lassoInitialized) return;
+  listEl._lassoInitialized = true;
+
+  let isSelecting = false;
+  let startX = 0;
+  let startY = 0;
+  let lassoBox = null;
+
+  listEl.addEventListener("mousedown", (e) => {
+    // Only left click outside row action buttons & checkboxes
+    if (e.button !== 0) return;
+    if (e.target.closest(".explorer-row-action-btn") || e.target.closest(".explorer-row-checkbox")) return;
+
+    // If not holding Ctrl/Shift and clicking empty area, clear previous selection
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.target.closest(".explorer-row")) {
+      explorerState.selectedPaths.clear();
+      updateExplorerSelectionUI();
+    }
+
+    // Start lasso only on background click or if dragging
+    const isRow = e.target.closest(".explorer-row");
+    const rect = listEl.getBoundingClientRect();
+    startX = e.clientX - rect.left + listEl.scrollLeft;
+    startY = e.clientY - rect.top + listEl.scrollTop;
+
+    let hasMoved = false;
+
+    const onMouseMove = (moveEv) => {
+      const curX = moveEv.clientX - rect.left + listEl.scrollLeft;
+      const curY = moveEv.clientY - rect.top + listEl.scrollTop;
+      const dx = curX - startX;
+      const dy = curY - startY;
+
+      if (!hasMoved && Math.hypot(dx, dy) > 5) {
+        hasMoved = true;
+        isSelecting = true;
+        if (!lassoBox) {
+          lassoBox = document.createElement("div");
+          lassoBox.className = "explorer-lasso-box";
+          listEl.appendChild(lassoBox);
+        }
+      }
+
+      if (isSelecting && lassoBox) {
+        const left = Math.min(startX, curX);
+        const top = Math.min(startY, curY);
+        const width = Math.abs(dx);
+        const height = Math.abs(dy);
+
+        lassoBox.style.left = left + "px";
+        lassoBox.style.top = top + "px";
+        lassoBox.style.width = width + "px";
+        lassoBox.style.height = height + "px";
+
+        // Check intersections with rows
+        const lBoxRect = {
+          left: left,
+          top: top,
+          right: left + width,
+          bottom: top + height,
+        };
+
+        const rows = listEl.querySelectorAll(".explorer-row");
+        rows.forEach((r) => {
+          const rTop = r.offsetTop;
+          const rBottom = rTop + r.offsetHeight;
+          const rLeft = r.offsetLeft;
+          const rRight = rLeft + r.offsetWidth;
+
+          const intersects = !(
+            rLeft > lBoxRect.right ||
+            rRight < lBoxRect.left ||
+            rTop > lBoxRect.bottom ||
+            rBottom < lBoxRect.top
+          );
+
+          const itemPath = r.getAttribute("data-item-path");
+          if (intersects) {
+            explorerState.selectedPaths.add(itemPath);
+          } else if (!moveEv.ctrlKey && !moveEv.metaKey) {
+            // Unselect if not dragging with Ctrl
+            explorerState.selectedPaths.delete(itemPath);
+          }
+        });
+        updateExplorerSelectionUI();
+      }
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      if (lassoBox) {
+        lassoBox.remove();
+        lassoBox = null;
+      }
+      isSelecting = false;
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  });
 }
 
 function renderExplorerList(items) {
@@ -3877,42 +4315,122 @@ function renderExplorerList(items) {
   if (!listEl) return;
   listEl.innerHTML = "";
 
+  if (!explorerState.selectedPaths) explorerState.selectedPaths = new Set();
+
   if (!items || items.length === 0) {
-    listEl.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted);">Empty folder</div>';
+    listEl.innerHTML =
+      '<div style="padding: 24px; text-align: center; color: var(--text-muted);">Empty folder</div>';
     return;
   }
 
-  items.forEach((item) => {
+  let lastClickedIndex = -1;
+
+  items.forEach((item, index) => {
     const row = document.createElement("div");
     row.className = "explorer-row";
+    row.setAttribute("data-item-path", item.path);
+    row.setAttribute("data-item-index", index);
+
+    const isSelected = explorerState.selectedPaths.has(item.path);
+    if (isSelected) row.classList.add("selected");
 
     const iconSvg = item.isDirectory
       ? '<span class="item-icon folder"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>'
       : '<span class="item-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg></span>';
 
+    const checkSvg = `<span class="explorer-row-checkbox" data-tip="Select"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,8 6,12 14,4"/></svg></span>`;
+
     const sizeText = item.isDirectory ? "--" : formatBytes(item.size);
-    const dateText = item.mtime ? new Date(item.mtime).toLocaleDateString() : "";
+    const dateText = item.mtime
+      ? new Date(item.mtime).toLocaleDateString()
+      : "";
 
     row.innerHTML = `
+      <span class="col-check">${checkSvg}</span>
       <span class="col-name">${iconSvg} <span>${escapeHtml(item.name)}</span></span>
       <span class="col-size">${sizeText}</span>
       <span class="col-date">${dateText}</span>
       <span class="col-actions" style="margin-left: 12px; display: inline-flex; gap: 6px;">
-        <button type="button" class="explorer-row-action-btn" title="Transfer to another drive/folder">
+        <button type="button" class="explorer-row-action-btn" data-tip="Transfer">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
         </button>
       </span>
     `;
-    const actionBtn = row.querySelector('.explorer-row-action-btn');
-    actionBtn?.addEventListener('click', (e) => {
+
+    // Checkbox click — toggle selection without navigation
+    const cb = row.querySelector(".explorer-row-checkbox");
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (explorerState.selectedPaths.has(item.path)) {
+        explorerState.selectedPaths.delete(item.path);
+        row.classList.remove("selected");
+        cb.setAttribute("data-tip", "Select");
+      } else {
+        explorerState.selectedPaths.add(item.path);
+        row.classList.add("selected");
+        cb.setAttribute("data-tip", "Selected");
+      }
+      lastClickedIndex = index;
+      updateExplorerSelectionUI();
+    });
+
+    const actionBtn = row.querySelector(".explorer-row-action-btn");
+    actionBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       showTransferTargetModal(item, explorerState.currentDeviceId);
     });
 
     row.addEventListener("click", (e) => {
       e.stopPropagation();
+
+      // Ctrl+click: toggle selection
+      if (e.ctrlKey || e.metaKey) {
+        if (explorerState.selectedPaths.has(item.path)) {
+          explorerState.selectedPaths.delete(item.path);
+          row.classList.remove("selected");
+        } else {
+          explorerState.selectedPaths.add(item.path);
+          row.classList.add("selected");
+        }
+        lastClickedIndex = index;
+        updateExplorerSelectionUI();
+        return;
+      }
+
+      // Shift+click: range select
+      if (e.shiftKey && lastClickedIndex >= 0) {
+        const start = Math.min(lastClickedIndex, index);
+        const end = Math.max(lastClickedIndex, index);
+        const rows = listEl.querySelectorAll(".explorer-row");
+        for (let i = start; i <= end; i++) {
+          const r = rows[i];
+          const p = r.getAttribute("data-item-path");
+          if (p) {
+            explorerState.selectedPaths.add(p);
+            r.classList.add("selected");
+          }
+        }
+        updateExplorerSelectionUI();
+        return;
+      }
+
+      // If any items are selected, plain click toggles this item in selection
+      if (explorerState.selectedPaths.size > 0) {
+        if (explorerState.selectedPaths.has(item.path)) {
+          explorerState.selectedPaths.delete(item.path);
+          row.classList.remove("selected");
+        } else {
+          explorerState.selectedPaths.add(item.path);
+          row.classList.add("selected");
+        }
+        lastClickedIndex = index;
+        updateExplorerSelectionUI();
+        return;
+      }
+
+      // Normal click with no selection active
+      lastClickedIndex = index;
       if (item.isDirectory) {
-        // If user holds Alt or clicks transfer button, transfer folder. Otherwise navigate inside.
         if (e.altKey) {
           showTransferTargetModal(item, explorerState.currentDeviceId);
         } else {
@@ -3920,13 +4438,17 @@ function renderExplorerList(items) {
           loadExplorerDirectory(explorerState.currentDeviceId, item.path);
         }
       } else {
-        // Clicking a file shows the Transfer dialog
         showTransferTargetModal(item, explorerState.currentDeviceId);
       }
     });
 
     listEl.appendChild(row);
   });
+
+  // Store items on the list for lasso use
+  listEl._explorerItems = items;
+  initExplorerLasso(listEl, items);
+  updateExplorerSelectionUI();
 }
 
 function navigateExplorerUp() {
@@ -3941,3 +4463,237 @@ function navigateExplorerUp() {
     loadExplorerDirectory(explorerState.currentDeviceId, parent);
   }
 }
+
+
+function showBatchTransferTargetModal(items, sourceDeviceId) {
+  if (!items || items.length === 0) return;
+  if (items.length === 1) {
+    showTransferTargetModal(items[0], sourceDeviceId);
+    return;
+  }
+
+  const existing = document.getElementById("explorer-transfer-modal");
+  if (existing) existing.remove();
+
+  const isFromFtp = sourceDeviceId && sourceDeviceId.startsWith("ftp-");
+  const modal = document.createElement("div");
+  modal.id = "explorer-transfer-modal";
+  modal.className = "modal-overlay open";
+
+  const totalBytes = items.reduce((acc, it) => acc + (it.size || 0), 0);
+  const sizeText = totalBytes ? formatBytes(totalBytes) : "";
+
+  const ftpDevices = explorerState.devices.filter((d) => d.id.startsWith("ftp-"));
+  const pcDevices = explorerState.devices.filter((d) => !d.id.startsWith("ftp-"));
+  const firstFtp = ftpDevices[0];
+  const firstPc = pcDevices[0] || { id: "pc-c" };
+
+  let targetOptionsHtml = "";
+  if (isFromFtp) {
+    targetOptionsHtml = `
+      <div id="transfer-opt-primary" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: rgba(var(--accent-rgb), 0.08); border: 1px solid var(--accent-color); border-radius: 12px; cursor: pointer; transition: transform 0.15s, background 0.15s;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="font-size: 24px;">📥</span>
+          <div>
+            <div style="font-weight: 600; font-size: 14px; color: #fff;">Save All to Default Folder</div>
+            <div id="transfer-opt-path-sub" style="font-size: 11px; color: var(--text-muted); margin-top: 2px; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Loading...</div>
+          </div>
+        </div>
+        <span style="font-size: 13px; color: var(--accent-color); font-weight: 600;">Queue All →</span>
+      </div>
+      <div id="transfer-opt-browse" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: var(--bg-elev-1); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; cursor: pointer; transition: border-color 0.15s, background 0.15s;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="font-size: 24px;">📂</span>
+          <div>
+            <div style="font-weight: 600; font-size: 14px; color: #fff;">Choose Custom PC Folder...</div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">Browse any folder on this PC for all ${items.length} items</div>
+          </div>
+        </div>
+        <span style="font-size: 13px; color: var(--text-muted); font-weight: 500;">Browse →</span>
+      </div>
+    `;
+  } else {
+    const ftpTitle = firstFtp ? `Send All to ${escapeHtml(firstFtp.name)}` : "Send to Phone FTP";
+    const ftpSub = firstFtp ? `Uploads all ${items.length} items to phone storage` : "No phone FTP connected";
+    targetOptionsHtml = `
+      <div id="transfer-opt-primary" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: ${firstFtp ? "rgba(var(--accent-rgb), 0.08)" : "rgba(255,255,255,0.03)"}; border: 1px solid ${firstFtp ? "var(--accent-color)" : "rgba(255,255,255,0.1)"}; border-radius: 12px; cursor: ${firstFtp ? "pointer" : "default"}; transition: transform 0.15s, background 0.15s;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="font-size: 24px;">📱</span>
+          <div>
+            <div style="font-weight: 600; font-size: 14px; color: #fff;">${ftpTitle}</div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${ftpSub}</div>
+          </div>
+        </div>
+        <span style="font-size: 13px; color: ${firstFtp ? "var(--accent-color)" : "var(--text-muted)"}; font-weight: 600;">${firstFtp ? "Queue All →" : "Offline"}</span>
+      </div>
+      <div id="transfer-opt-browse" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: var(--bg-elev-1); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; cursor: pointer; transition: border-color 0.15s, background 0.15s;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="font-size: 24px;">📁</span>
+          <div>
+            <div style="font-weight: 600; font-size: 14px; color: #fff;">Copy to Another Folder...</div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">Select destination folder on PC</div>
+          </div>
+        </div>
+        <span style="font-size: 13px; color: var(--text-muted); font-weight: 500;">Browse →</span>
+      </div>
+    `;
+  }
+
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width: 520px; width: 92vw; text-align: left; padding: 24px; border: 1px solid rgba(var(--accent-rgb), 0.25); border-radius: 16px; background: #0d0e12; box-shadow: 0 20px 48px rgba(0,0,0,0.85);">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+        <div style="display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; color: #fff;">
+          <span style="display: inline-flex; width: 32px; height: 32px; border-radius: 8px; background: rgba(var(--accent-rgb), 0.12); align-items: center; justify-content: center; color: var(--accent-color);">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          </span>
+          Batch Transfer (${items.length} items)
+        </div>
+        <button type="button" id="transfer-modal-close" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 18px; padding: 4px;">✕</button>
+      </div>
+
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px 14px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 22px;">📦</span>
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-weight: 600; font-size: 13px; color: #fff;">${items.length} files & folders queued</div>
+          ${sizeText ? `<div style="font-size: 11px; color: var(--accent-color); margin-top: 2px;">Total size: ${sizeText}</div>` : ""}
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px;">
+        ${targetOptionsHtml}
+      </div>
+
+      <div id="transfer-modal-error" style="display: none; font-size: 12px; color: #ff6b6b; margin-top: 10px; line-height: 1.4;"></div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  const primaryBtn = modal.querySelector("#transfer-opt-primary");
+  const browseBtn = modal.querySelector("#transfer-opt-browse");
+  const closeBtn = modal.querySelector("#transfer-modal-close");
+  const pathSubEl = modal.querySelector("#transfer-opt-path-sub");
+
+  let defaultDir = state.settings?.downloadDir || "";
+  window.lanbeam.transfer?.defaultDownloadDir?.().then((dir) => {
+    if (!defaultDir) defaultDir = dir;
+    if (pathSubEl) pathSubEl.textContent = defaultDir || "Downloads\\LANBeam";
+  });
+
+  const closeModal = () => modal.remove();
+  closeBtn?.addEventListener("click", closeModal);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeModal();
+  });
+
+  const executeBatch = async (targetDir, targetDeviceId) => {
+    modal.remove();
+    explorerState.selectedPaths.clear();
+    updateExplorerSelectionUI();
+
+    const isOut = !sourceDeviceId.startsWith("ftp-");
+    const peerName = isOut ? (firstFtp?.name || "Phone Storage") : "Phone Storage";
+
+    toast(`Starting queue of ${items.length} transfers...`);
+
+    // Sequential queue loop
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const tid = "batch-xfer-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+      updateTransferCard(
+        {
+          fileId: tid,
+          fileName: `[${i + 1}/${items.length}] ${it.name}`,
+          totalBytes: it.size || 0,
+          bytesTransferred: 0,
+          peerName: peerName,
+          throughputMbps: 0,
+          etaMs: 0,
+          sparkline: [],
+        },
+        isOut ? "out" : "in",
+      );
+
+      try {
+        await window.lanbeam.explorer.transfer({
+          transferId: tid,
+          sourcePath: it.path,
+          targetDir: targetDir,
+          sourceDeviceId: sourceDeviceId,
+          targetDeviceId: targetDeviceId,
+          totalBytes: it.size || 0,
+        });
+        // explorer.transfer() already awaits completion — proceed to next item
+      } catch (err) {
+        console.error("Batch item failed:", it.name, err);
+        failTransferCard(err.message || "Transfer error", tid);
+      }
+    }
+    toast(`Completed all ${items.length} transfers!`);
+  };
+
+  if (isFromFtp) {
+    primaryBtn?.addEventListener("click", () => executeBatch(defaultDir || "C:\\", firstPc.id));
+    browseBtn?.addEventListener("click", async () => {
+      const picked = await window.lanbeam.transfer.pickDownloadDir();
+      if (picked) executeBatch(picked, firstPc.id);
+    });
+  } else {
+    primaryBtn?.addEventListener("click", () => {
+      if (!firstFtp) { openFtpModal(); return; }
+      const remoteDir = explorerState.devicePaths[firstFtp.id] || firstFtp.rootPath || "/";
+      executeBatch(remoteDir, firstFtp.id);
+    });
+    browseBtn?.addEventListener("click", async () => {
+      const picked = await window.lanbeam.transfer.pickDownloadDir();
+      if (picked) executeBatch(picked, firstPc.id);
+    });
+  }
+}
+
+
+// ── Global data-tip tooltip (body-level, never clipped) ──────────────────
+(function () {
+  const tip = document.createElement('div');
+  tip.id = 'ui-tooltip';
+  document.body.appendChild(tip);
+
+  let autoHide = null;
+
+  function showTip(el) {
+    clearTimeout(autoHide);
+    const text = el.getAttribute('data-tip');
+    if (!text) return;
+    tip.textContent = text;
+    const rect = el.getBoundingClientRect();
+    tip.classList.remove('visible');
+    tip.style.left = (rect.left + rect.width / 2) + 'px';
+    tip.style.top = (rect.top - 32) + 'px';
+    tip.style.transform = 'translateX(-50%) translateY(2px)';
+    requestAnimationFrame(() => {
+      tip.style.transform = 'translateX(-50%) translateY(0)';
+      tip.classList.add('visible');
+    });
+    autoHide = setTimeout(hideTip, 3000);
+  }
+
+  function hideTip() {
+    clearTimeout(autoHide);
+    tip.classList.remove('visible');
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest('[data-tip]');
+    if (el) showTip(el); else hideTip();
+  }, true);
+
+  document.addEventListener('mouseout', (e) => {
+    const el = e.target.closest('[data-tip]');
+    if (el) hideTip();
+  }, true);
+
+  document.addEventListener('scroll', hideTip, true);
+  document.addEventListener('mousedown', hideTip, true);
+})();
+

@@ -63,23 +63,30 @@
       </div>
     </header>
 
+    <!-- Custom Window Controls (NovaTune spec) -->
+    <div class="win-controls">
+      <button class="win-btn" id="win-min" aria-label="Minimize"><svg viewBox="0 0 12 12"><line x1="1.5" y1="6" x2="10.5" y2="6"/></svg></button>
+      <button class="win-btn" id="win-max" aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="1.75" y="1.75" width="8.5" height="8.5" rx="1.2"/></svg></button>
+      <button class="win-btn win-close" id="win-close" aria-label="Close"><svg viewBox="0 0 12 12"><line x1="1.75" y1="1.75" x2="10.25" y2="10.25"/><line x1="10.25" y1="1.75" x2="1.75" y2="10.25"/></svg></button>
+    </div>
+
     <!-- ===== Body: sidebar + content ===== -->
     <div class="body">
       <!-- Sidebar -->
       <nav class="sidebar">
         <div class="nav-items">
-          <button class="nav-item active" data-view="home" aria-label="Home">
+          <button class="nav-item active" data-view="home" aria-label="Home" data-tip="Home">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
               <polyline points="9 22 9 12 15 12 15 22"/>
             </svg>
           </button>
-                    <button class="nav-item" data-view="explorer" aria-label="Explorer">
+                    <button class="nav-item" data-view="explorer" aria-label="Explorer" data-tip="Explorer">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
-          <button class="nav-item" data-view="devices" aria-label="Devices">
+          <button class="nav-item" data-view="devices" aria-label="Devices" data-tip="Devices">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
               <line x1="8" y1="21" x2="16" y2="21"/>
@@ -92,13 +99,13 @@
               <polyline points="12 6 12 12 16 14"/>
             </svg>
           </button>
-          <button class="nav-item" data-view="speedtest" aria-label="Speed Test">
+          <button class="nav-item" data-view="speedtest" aria-label="Speed Test" data-tip="Speed Test">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M18.54 19.79a9.25 9.25 0 1 0-13.08 0"></path>
               <path d="m12 13.25 4-4"></path>
             </svg>
           </button>
-          <button class="nav-item" data-view="settings" aria-label="Settings">
+          <button class="nav-item" data-view="settings" aria-label="Settings" data-tip="Settings">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -126,7 +133,7 @@
           <!-- Dynamic storage device tabs -->
         </div>
         <div class="explorer-breadcrumbs-bar">
-          <button id="explorer-up-btn" class="explorer-btn-icon" title="Up Directory">
+          <button id="explorer-up-btn" class="explorer-btn-icon" data-tip="Up Directory">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
           <div class="explorer-breadcrumbs" id="explorer-breadcrumbs"></div>
@@ -135,10 +142,10 @@
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </span>
             <input type="text" id="explorer-search-input" placeholder="Search folder..." autocomplete="off" spellcheck="false" />
-            <button id="explorer-search-scope-btn" class="explorer-scope-pill" title="Toggle: Search Current Folder vs Whole Drive">In Folder</button>
-            <button id="explorer-search-clear-btn" class="explorer-search-clear" title="Clear search">✕</button>
+            <button id="explorer-search-scope-btn" class="explorer-scope-pill" data-tip="Toggle: Search Current Folder vs Whole Drive">In Folder</button>
+            <button id="explorer-search-clear-btn" class="explorer-search-clear" data-tip="Clear search">✕</button>
           </div>
-          <button id="explorer-refresh-btn" class="explorer-btn-icon" title="Refresh">
+          <button id="explorer-refresh-btn" class="explorer-btn-icon" data-tip="Refresh">
             <svg class="refresh-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
               <path fill="none" d="M0 0h24v24H0z"></path>
               <path d="M5.463 4.433A9.961 9.961 0 0 1 12 2c5.523 0 10 4.477 10 10 0 2.136-.67 4.116-1.81 5.74L17 12h3A8 8 0 0 0 6.46 6.228l-.997-1.795zm13.074 15.134A9.961 9.961 0 0 1 12 22C6.477 22 2 17.523 2 12c0-2.136.67-4.116 1.81-5.74L7 12H4a8 8 0 0 0 13.54 5.772l.997 1.795z"></path>
@@ -148,6 +155,7 @@
       </div>
       <div class="explorer-body">
         <div class="explorer-table-header">
+          <span class="col-check"></span>
           <span class="col-name">Name</span>
           <span class="col-size">Size</span>
           <span class="col-date">Modified</span>
@@ -217,7 +225,7 @@
           <h2 class="page-title">Devices</h2>
           <p class="page-sub">Paired devices on this LAN. Click a device to send files.</p>
         </div>
-        <button type="button" class="ghost-btn" id="clear-offline-btn" title="Remove every offline device from the list">
+        <button type="button" class="ghost-btn" id="clear-offline-btn" data-tip="Remove every offline device from the list">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           <span>Clear offline</span>
         </button>

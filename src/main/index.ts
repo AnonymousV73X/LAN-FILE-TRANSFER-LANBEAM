@@ -136,8 +136,8 @@ async function createWindow() {
       process.platform === 'win32'
         ? {
             color: 'rgba(0, 0, 0, 0)',
-            symbolColor: '#b3b3b3',
-            height: 38,
+            symbolColor: 'rgba(0, 0, 0, 0)',
+            height: 32,
           }
         : undefined,
     webPreferences: {

@@ -2095,32 +2095,39 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   display: inline-flex;
   flex-shrink: 0;
   height: 32px;
-  background: var(--pl-c);
-  clip-path: var(--pl-clip);
   cursor: pointer;
   user-select: none;
-  filter: drop-shadow(0 0 0 transparent);
-  transition: filter 0.15s;
 }
-.pl-seg-first { border-radius: 999px 0 0 999px; }
-.pl-seg-last { border-radius: 0 999px 999px 0; cursor: default; }
-.pl-seg-first.pl-seg-last { border-radius: 999px; }
+.pl-seg-last { cursor: default; }
+
+.pl-shape {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.pl-shape path {
+  fill: var(--bg-elev-1, #0a0a0a);
+  stroke: var(--pl-c);
+  transition: fill 0.15s, stroke 0.15s;
+}
 
 .pl-in {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   margin: 1.5px;
   padding: 0 20px 0 18px;
-  background: var(--bg-elev-1, #0a0a0a);
   color: var(--pl-text, var(--pl-c));
-  clip-path: var(--pl-clip-in);
   font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
   font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
-  border-radius: inherit;
-  transition: background 0.15s, color 0.15s;
+  transition: color 0.15s;
 }
 .pl-seg-first .pl-in { padding-left: 14px; }
 .pl-seg-last .pl-in { padding-right: 16px; font-weight: 700; }
@@ -2128,8 +2135,22 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   --pl-c: rgba(255, 255, 255, 0.8);
   --pl-text: #ffffff;
 }
-.pl-seg:not(.pl-seg-last):hover .pl-in {
-  background: rgba(255, 255, 255, 0.05);
+.pl-seg:not(.pl-seg-last):hover .pl-shape path {
+  fill: #121212;
+}
+
+.pl-seg-ellipsis .pl-in {
+  justify-content: center;
+  padding: 0 22px;
+  min-width: 16px;
+}
+.pl-seg-ellipsis .pl-seg-label {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1;
+  display: inline-block;
+  transform: translateY(-3px);
 }
 
 .pl-seg-icon { display: inline-flex; align-items: center; }
@@ -2144,22 +2165,21 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   height: 32px;
   box-sizing: border-box;
   background: var(--bg-elev-1, #0a0a0a);
-  border: 1.5px solid var(--border-soft, rgba(255, 255, 255, 0.12));
+  border: none;
+  box-shadow: inset 0 0 0 1.5px rgba(235, 240, 245, 0.22);
   border-radius: 999px;
   padding: 0 8px 0 12px;
   margin-left: auto;
   min-width: 240px;
   max-width: 360px;
-  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  transition: box-shadow 0.15s, background 0.15s;
 }
 .explorer-search-box:focus-within {
-  border-color: var(--accent-color);
-  box-shadow: 0 0 0 1px var(--accent-color);
+  box-shadow: inset 0 0 0 1.5px var(--accent-color);
   background: var(--bg-elev-2, #141414);
 }
 .explorer-search-box:focus-within {
-  border-color: var(--accent-color);
-  box-shadow: 0 0 0 1px var(--accent-color);
+  box-shadow: inset 0 0 0 1.5px var(--accent-color);
 }
 
 .explorer-search-icon {
@@ -2189,7 +2209,8 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   height: 22px;
   background: rgba(var(--accent-rgb), 0.14);
   color: var(--accent-color);
-  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  border: none;
+  box-shadow: inset 0 0 0 1.5px rgba(var(--accent-rgb), 0.35);
   border-radius: 999px;
   font-family: var(--font-sans);
   font-size: 11px;
@@ -2206,7 +2227,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
 }
 .explorer-scope-pill.scope-drive {
   background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.15);
   color: var(--text-secondary, #ddd);
 }
 .explorer-scope-pill.scope-drive:hover {
@@ -2329,4 +2350,249 @@ button { font-family: inherit; color: inherit; cursor: pointer; background: none
   height: 140px;
   border-radius: 12px;
   margin-bottom: 8px;
+}
+
+
+/* ─── Custom window controls (NovaTune spec) ─── */
+.win-controls {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 32px;
+  display: flex;
+  z-index: 100001;
+  -webkit-app-region: no-drag;
+}
+.win-btn {
+  width: 46px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s;
+  -webkit-app-region: no-drag;
+}
+.win-btn svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.win-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.win-btn:active {
+  background: rgba(255, 255, 255, 0.24);
+}
+.win-btn.win-close:hover {
+  background: #e81123;
+}
+.win-btn.win-close:active {
+  background: #f1707a;
+}
+/* Native overlay (invisible glyphs) handles clicks + Snap Layouts; DOM buttons are visual only */
+.win-controls,
+.win-controls * {
+  pointer-events: none !important;
+}
+
+/* ─── Explorer Multi-select & Lasso & Action Bar ─── */
+.explorer-body {
+  position: relative;
+}
+
+.explorer-list {
+  position: relative;
+  user-select: none;
+}
+
+.explorer-row {
+  position: relative;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.explorer-row.selected {
+  background: rgba(var(--accent-rgb), 0.14) !important;
+  border-bottom-color: transparent !important;
+  border-radius: 8px;
+  margin: 1px 8px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.explorer-row.selected .col-name span {
+  color: #fff;
+  font-weight: 500;
+}
+
+/* Dedicated checkbox column — always occupies 36px so rows never shift */
+.col-check {
+  width: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Also add col-check to header */
+.explorer-header .col-check {
+  width: 36px;
+  flex-shrink: 0;
+}
+
+.explorer-row-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.explorer-row:hover .explorer-row-checkbox {
+  border-color: rgba(255, 255, 255, 0.65);
+}
+
+.explorer-row.selected .explorer-row-checkbox {
+  border-color: var(--accent-color);
+  background: var(--accent-color);
+}
+
+.explorer-row-checkbox svg {
+  display: none;
+  width: 11px;
+  height: 11px;
+  stroke: #000;
+  stroke-width: 2.5;
+  fill: none;
+}
+
+.explorer-row.selected .explorer-row-checkbox svg {
+  display: block;
+}
+
+/* Lasso selection box */
+.explorer-lasso-box {
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid var(--accent-color);
+  background: rgba(var(--accent-rgb), 0.15);
+  border-radius: 3px;
+  z-index: 1000;
+}
+
+/* Floating Batch Action Bar */
+.explorer-batch-bar {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(18, 19, 24, 0.96);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--accent-color);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.75), 0 0 15px rgba(var(--accent-rgb), 0.2);
+  border-radius: 30px;
+  padding: 8px 18px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 2000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.explorer-batch-bar.active {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+
+.explorer-batch-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.explorer-batch-count-badge {
+  background: var(--accent-color);
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 12px;
+}
+
+.explorer-batch-btn-transfer {
+  background: var(--accent-color);
+  color: #000;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 16px;
+  border-radius: 20px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.explorer-batch-btn-transfer:hover {
+  opacity: 0.92;
+  transform: scale(1.02);
+}
+
+.explorer-batch-btn-clear {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: color 0.15s;
+}
+
+.explorer-batch-btn-clear:hover {
+  color: #fff;
+}
+
+/* ── Custom tooltips: rendered via JS into #ui-tooltip (never clipped) ── */
+#ui-tooltip {
+  position: fixed;
+  z-index: 999999;
+  pointer-events: none;
+  padding: 4px 10px;
+  background: rgba(14, 15, 20, 0.96);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: 0.03em;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+  transform: translateY(2px);
+}
+#ui-tooltip.visible {
+  opacity: 1;
+  transform: translateY(0);
 }
