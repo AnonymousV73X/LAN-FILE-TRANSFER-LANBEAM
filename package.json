@@ -4,7 +4,7 @@
   "description": "LANBeam — Record-breaking zero-config LAN file transfer. Electron + Rust (napi-rs) + QUIC + BLAKE3 Merkle + zstd + mDNS.",
   "main": "dist/main/index.js",
   "author": "LANBeam",
-  "license": "MIT",
+  "license": "TBD",
   "scripts": {
     "build:ts": "tsc -p tsconfig.json",
     "build:native": "node scripts/build-native.js",
