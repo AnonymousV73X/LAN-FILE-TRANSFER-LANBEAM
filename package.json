@@ -1,6 +1,6 @@
 {
   "name": "lanbeam",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "LANBeam — Record-breaking zero-config LAN file transfer. Electron + Rust (napi-rs) + QUIC + BLAKE3 Merkle + zstd + mDNS.",
   "main": "dist/main/index.js",
   "author": "LANBeam",

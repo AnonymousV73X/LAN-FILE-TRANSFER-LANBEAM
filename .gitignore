@@ -4,8 +4,29 @@ release/
 native/target/
 native/index.node
 *.log
+*.pem
 .DS_Store
 .vscode/
 .idea/
 benchmark-results/*.json
 !benchmark-results/sample-report.json
+# Build artifacts & scratch
+*.zip
+LANBeam Zips/
+build/
+native/Cargo.lock
+native/*.node
+native/src/PATCHES.md
+native/src/native-fixes.patch
+original_cloud_block.js
+# Rclone configs (never commit credentials)
+rclone.conf
+*.rclone.conf
+# Temp patch/dump scripts
+scripts/check-accent.js
+scripts/copy-forge.js
+scripts/dump-*.js
+scripts/find-*.js
+scripts/fix-*.js
+scripts/patch-*.js
+GEMINI.md

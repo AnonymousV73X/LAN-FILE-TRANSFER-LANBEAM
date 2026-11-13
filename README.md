@@ -270,4 +270,4 @@ The optimized path's uplift over baseline comes from:
 
 ## 9. License
 
-TBD.
+PROPRIETARY — FOR SALE. All rights reserved. Not free or open source software. Contact the owner for purchase and commercial licensing.

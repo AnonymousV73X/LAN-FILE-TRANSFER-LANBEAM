@@ -281,6 +281,7 @@ function applyPhoneAccent(color) {
   const rgb = hexToRgb(color);
   if (!rgb || color === state.appliedAccent) return;
   state.appliedAccent = color;
+  try { localStorage.setItem('lanbeam:accentColor', color); } catch {}
   const s = document.documentElement.style;
   s.setProperty('--accent', color);
   s.setProperty('--accent-rgb', `${rgb.r}, ${rgb.g}, ${rgb.b}`);
@@ -292,6 +293,12 @@ function applyPhoneAccent(color) {
   const lum = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
   s.setProperty('--accent-contrast', lum > 0.56 ? '#001318' : '#FFFFFF');
 }
+
+// Restore remembered accent immediately on boot before network fetch
+try {
+  const savedAccent = localStorage.getItem('lanbeam:accentColor');
+  if (savedAccent) applyPhoneAccent(savedAccent);
+} catch {}
 
 // ---------------------------------------------------------------------------
 // Font sync — the phone site uses the SAME typeface the PC selected
@@ -662,147 +669,14 @@ function bindPicker() {
     fileInput?.click();
   });
 
-  btnFolder?.addEventListener('click', async (e) => {
+  btnFolder?.addEventListener('click', (e) => {
     e.stopPropagation();
-    // Strategy 1 — File System Access API. Desktop Chrome/Edge/Opera and
-    // Android Chrome 132+ (Jan 2025) all support showDirectoryPicker().
-    if (window.showDirectoryPicker) {
-      try {
-        const dirHandle = await window.showDirectoryPicker();
-        const files = [];
-        const readDir = async (handle, currentPath) => {
-          for await (const entry of handle.values()) {
-            if (entry.kind === 'file') {
-              const file = await entry.getFile();
-              file.customName = currentPath + '/' + file.name;
-              files.push(file);
-            } else if (entry.kind === 'directory') {
-              await readDir(entry, currentPath + '/' + entry.name);
-            }
-          }
-        };
-        await readDir(dirHandle, dirHandle.name);
-        if (files.length) {
-          enqueueFiles(files);
-          return;
-        }
-        // Empty folder — nothing to send, tell the user instead of silently
-        // falling through to the file picker.
-        toast('That folder is empty');
-        return;
-      } catch (err) {
-        if (err.name === 'AbortError') return; // user closed the picker
-        console.warn('showDirectoryPicker failed, falling back to input:', err);
-      }
+    if (folderInput) {
+      folderInput.click();
     }
-    // Strategy 2 — webkitdirectory <input>. Works on desktop Firefox/Safari
-    // and newer Android browsers. On browsers WITHOUT folder support the
-    // dialog silently degrades to a plain file picker — the change handler
-    // below detects that (no webkitRelativePath) and tells the user
-    // honestly instead of pretending folders were selected.
-    if (isIos() && !window.showDirectoryPicker) {
-      // iOS Safari does not support folder picking — set expectations upfront
-      // instead of opening a picker that can't do the job.
-      toast('iOS can\'t pick folders — open your Files app, or pick files instead');
-    }
-    folderInput?.click();
   });
 
-  const btnShareStorage = document.getElementById('btn-share-storage');
-  let storageShared = false;
 
-  btnShareStorage?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const btnText = document.getElementById('btn-share-storage-text');
-
-    if (storageShared) {
-      // Unshare
-      try {
-        await fetch('/api/explorer/unregister', {
-          method: 'POST',
-          headers: authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ deviceId: state.deviceId }),
-        });
-        storageShared = false;
-        if (btnText) btnText.textContent = 'Drive';
-        btnShareStorage.classList.remove('btn-pill-accent');
-        toast('Phone drive unmounted from PC');
-      } catch (err) {
-        toast('Failed to unmount: ' + err.message);
-      }
-      return;
-    }
-
-    if (!window.showDirectoryPicker) {
-      toast('Drive mounting requires Chrome/Edge or Android Chrome');
-      return;
-    }
-
-    try {
-      const dirHandle = await window.showDirectoryPicker();
-      toast('Indexing storage for PC explorer...');
-      const entries = [];
-      let fileIdCounter = 1;
-
-      const walk = async (handle, rel) => {
-        for await (const entry of handle.values()) {
-          const currentRel = rel ? rel + '/' + entry.name : entry.name;
-          if (entry.kind === 'file') {
-            try {
-              const f = await entry.getFile();
-              entries.push({
-                id: 'f_' + (fileIdCounter++),
-                name: entry.name,
-                relativePath: currentRel,
-                isDirectory: false,
-                size: f.size,
-                mtime: f.lastModified,
-              });
-            } catch {}
-          } else if (entry.kind === 'directory') {
-            entries.push({
-              id: 'd_' + (fileIdCounter++),
-              name: entry.name,
-              relativePath: currentRel,
-              isDirectory: true,
-              size: 0,
-              mtime: Date.now(),
-            });
-            await walk(entry, currentRel);
-          }
-        }
-      };
-
-      await walk(dirHandle, '');
-
-      const devName = (state.selfDevice && state.selfDevice.name)
-        ? state.selfDevice.name
-        : (navigator.userAgent.includes('Android') ? 'Android Phone' : (navigator.userAgent.includes('iPhone') ? 'iPhone' : 'Mobile Storage'));
-
-      const res = await fetch('/api/explorer/register', {
-        method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          deviceId: state.deviceId,
-          deviceName: devName,
-          entries: entries,
-        }),
-      });
-
-      if (res.ok) {
-        storageShared = true;
-        if (btnText) btnText.textContent = 'Mounted ✓';
-        btnShareStorage.classList.add('btn-pill-accent');
-        toast('Drive mounted on PC Explorer!');
-      } else {
-        const j = await res.json().catch(() => ({}));
-        toast('Failed to mount: ' + (j.error || res.statusText));
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') return;
-      toast('Storage selection error: ' + err.message);
-    }
-  });
 
   zone.addEventListener('click', (e) => {
     if (e.target !== btnFolder && !btnFolder?.contains(e.target)) {
@@ -1767,6 +1641,9 @@ async function refreshFooter() {
     // rescan, no matter how many router reboots happen in between.
     if (j.links?.permanent) {
       try { localStorage.setItem('lanbeam:homeUrl', j.links.permanent); } catch {}
+    }
+    if (j.links?.https) {
+      try { localStorage.setItem('lanbeam:httpsUrl', j.links.https); } catch {}
     }
     // Dual-origin lane sharding: the same PC usually answers on TWO
     // addresses (mDNS hostname + LAN IP). Browsers key the 6-connection

@@ -137,6 +137,27 @@ const api = {
       return () => ipcRenderer.removeListener('update:error', sub);
     },
   },
+  cloud: {
+    listProfiles: () => ipcRenderer.invoke('cloud:list-profiles'),
+    saveProfile: (p: any) => ipcRenderer.invoke('cloud:save-profile', p),
+    deleteProfile: (id: string) => ipcRenderer.invoke('cloud:delete-profile', id),
+    listRemoteFiles: (opts: { profileId: string; remote: string; subPath?: string }) =>
+      ipcRenderer.invoke('cloud:list-remote-files', opts),
+    startTransfer: (opts: {
+      profileId: string;
+      sourceRemote: string;
+      sourceSubPath: string;
+      destRemote: string;
+      destSubPath: string;
+      selectedItems?: string[];
+    }) => ipcRenderer.invoke('cloud:start-transfer', opts),
+    cancelTransfer: (jobId: string) => ipcRenderer.invoke('cloud:cancel-transfer', jobId),
+    onTransferProgress: (cb: (status: any) => void) => {
+      const sub = (_e: any, status: any) => cb(status);
+      ipcRenderer.on('cloud:transfer-progress', sub);
+      return () => ipcRenderer.removeListener('cloud:transfer-progress', sub);
+    },
+  },
 };
 
 try {

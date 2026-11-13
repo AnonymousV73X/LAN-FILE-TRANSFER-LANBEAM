@@ -14,6 +14,29 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <meta name="apple-mobile-web-app-title" content="LANBeam" />
+  <script>
+    (function() {
+      try {
+        var c = localStorage.getItem('lanbeam:accentColor');
+        if (c) {
+          var m = c.replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+          if (m) {
+            var r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+            var s = document.documentElement.style;
+            s.setProperty('--accent', c);
+            s.setProperty('--accent-rgb', r + ', ' + g + ', ' + b);
+            var mix = function(x) { return Math.round(x + (255 - x) * 0.25); };
+            s.setProperty('--accent-2', 'rgb(' + mix(r) + ', ' + mix(g) + ', ' + mix(b) + ')');
+            s.setProperty('--accent-soft', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.15)');
+            s.setProperty('--accent-very-soft', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.06)');
+            s.setProperty('--accent-glow', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.35)');
+            var lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+            s.setProperty('--accent-contrast', lum > 0.56 ? '#001318' : '#FFFFFF');
+          }
+        }
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <header class="topbar">
@@ -64,10 +87,6 @@
           <button type="button" class="btn-pill btn-pill-accent" id="btn-pick-folder">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             <span>Folder</span>
-          </button>
-          <button type="button" class="btn-pill" id="btn-share-storage" title="Mount storage as PC drive">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-            <span id="btn-share-storage-text">Drive</span>
           </button>
         </div>
       </div>
