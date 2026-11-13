@@ -33,6 +33,7 @@ import { StateStore } from './store';
 import { TransferOrchestrator } from './transfer-orchestrator';
 import { queryWifiInfo } from './wifi-info';
 import { log } from './logger';
+import { getOrCreateCertificate } from './cert-generator';
 
 const PHONE_DIR = path.join(__dirname, '..', 'phone');
 // Font files live with the desktop renderer; the phone web UI reuses the exact
@@ -46,6 +47,7 @@ export interface HttpServerOptions {
   store: StateStore;
   orchestrator: TransferOrchestrator;
   downloadDir: string;
+  getDownloadDir?: () => string;
   onDevicePaired?: (device: any) => void;
   onExplorerDeviceRegistered?: (deviceId: string, deviceName: string) => void;
   /**
@@ -56,7 +58,7 @@ export interface HttpServerOptions {
    * The phone stores the permanent link so its shortcut reconnects for
    * months without ever scanning the QR again.
    */
-  links?: () => { permanent?: string; ip?: string };
+  links?: () => { permanent?: string; ip?: string; https?: string };
   /**
    * Shared secret for the built-in transfer-engine speed test. Lets the
    * desktop's own `speedtest:run` IPC self-test reach /api/speedtest without
@@ -70,6 +72,8 @@ export interface HttpServerOptions {
 export interface HttpServerHandle {
   port: number;
   url: string;
+  httpsPort?: number;
+  httpsUrl?: string;
   close: () => Promise<void>;
 }
 
@@ -350,7 +354,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
     ]);
   }
 
-  const server = http.createServer(async (req, res) => {
+  const requestHandler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       const parsed = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       const pathname = parsed.pathname;
@@ -799,12 +803,16 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         // never lands for the desktop user, both ends are already paired.
         // -------------------------------------------------------------
         const targetId = typeof manifest.targetDeviceId === 'string' ? manifest.targetDeviceId : '';
+        const targetDownloadDir = opts.getDownloadDir
+          ? opts.getDownloadDir()
+          : ((opts.store.settings.downloadDir && opts.store.settings.downloadDir !== path.dirname(opts.downloadDir)) ? opts.store.settings.downloadDir : opts.downloadDir);
+
         const target = targetId && targetId !== deviceId
           ? opts.store.pairedDevices.find(d => d.deviceId === targetId)
           : undefined;
         if (target) {
           const keepCopy = manifest.keepCopy !== false; // default: keep
-          await opts.orchestrator.startInbound(manifest, opts.store.settings.downloadDir || opts.downloadDir, peerName);
+          await opts.orchestrator.startInbound(manifest, targetDownloadDir, peerName);
           pendingRelays.set(manifest.fileId, {
             targetDeviceId: target.deviceId,
             targetName: target.name,
@@ -836,7 +844,7 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
             return;
           }
         }
-        const transferId = await opts.orchestrator.startInbound(manifest, opts.store.settings.downloadDir || opts.downloadDir, peerName);
+        const transferId = await opts.orchestrator.startInbound(manifest, targetDownloadDir, peerName);
         sendJson(res, 200, { transferId, requestId });
         return;
       }
@@ -1128,7 +1136,9 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
       }
       if (!res.headersSent) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'internal error', code: 'E_SERVER' })); }
     }
-  });
+  };
+
+  const server = http.createServer(requestHandler);
 
   // -----------------------------------------------------------------
   // Throughput: give every accepted socket TCP_NODELAY (no Nagle small-
@@ -1194,10 +1204,51 @@ export async function startHttpServer(opts: HttpServerOptions): Promise<HttpServ
         const addr = server.address();
         const boundPort = typeof addr === 'object' && addr ? addr.port : port;
         const url = `http://${opts.hostname}:${boundPort}`;
+
+        let httpsServer: https.Server | null = null;
+        let httpsPortBound = boundPort + 1;
+        try {
+          const certs = getOrCreateCertificate(opts.downloadDir, opts.hostname);
+          httpsServer = https.createServer({ key: certs.key, cert: certs.cert }, requestHandler);
+          httpsServer.requestTimeout = 0;
+          httpsServer.headersTimeout = 60_000;
+          httpsServer.keepAliveTimeout = 65_000;
+          httpsServer.setTimeout(0);
+          httpsServer.on('connection', (sock: any) => {
+            try {
+              sock.setNoDelay?.(true);
+              sock.setKeepAlive?.(true, 15_000);
+            } catch {}
+            sock.on('error', () => {});
+          });
+          httpsServer.on('clientError', (_err, sock) => { try { sock.destroy(); } catch {} });
+          httpsServer.once('error', () => {
+            httpsServer?.listen(0, '0.0.0.0', () => {
+              const hAddr = httpsServer?.address();
+              if (typeof hAddr === 'object' && hAddr) httpsPortBound = hAddr.port;
+            });
+          });
+          httpsServer.listen(httpsPortBound, '0.0.0.0', () => {
+            const hAddr = httpsServer?.address();
+            if (typeof hAddr === 'object' && hAddr) httpsPortBound = hAddr.port;
+            log.info(`[https] Secure context server active: https://${opts.hostname}:${httpsPortBound}`);
+          });
+        } catch (err) {
+          log.warn('[https] Could not launch HTTPS server:', err);
+        }
+
         resolve({
           port: boundPort,
           url,
-          close: () => { clearInterval(presenceSweeper); clearInterval(dlTokenSweeper); for (const t of removalTimers.values()) clearTimeout(t); return new Promise<void>((r) => server.close(() => r())); },
+          httpsPort: httpsPortBound,
+          httpsUrl: `https://${opts.hostname}:${httpsPortBound}`,
+          close: () => {
+            clearInterval(presenceSweeper);
+            clearInterval(dlTokenSweeper);
+            for (const t of removalTimers.values()) clearTimeout(t);
+            if (httpsServer) { try { httpsServer.close(); } catch (_) {} }
+            return new Promise<void>((r) => server.close(() => r()));
+          },
         });
       });
     };

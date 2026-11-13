@@ -86,17 +86,23 @@
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
+          <button class="nav-item" data-view="history" id="nav-history-btn" style="display:none" aria-label="History">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </button>
+          <button class="nav-item" data-view="settings" aria-label="Settings" data-tip="Settings">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
           <button class="nav-item" data-view="devices" aria-label="Devices" data-tip="Devices">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
               <line x1="8" y1="21" x2="16" y2="21"/>
               <line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
-          </button>
-          <button class="nav-item" data-view="history" id="nav-history-btn" style="display:none" aria-label="History">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <polyline points="12 6 12 12 16 14"/>
             </svg>
           </button>
           <button class="nav-item" data-view="speedtest" aria-label="Speed Test" data-tip="Speed Test">
@@ -105,10 +111,9 @@
               <path d="m12 13.25 4-4"></path>
             </svg>
           </button>
-          <button class="nav-item" data-view="settings" aria-label="Settings" data-tip="Settings">
+          <button class="nav-item" data-view="cloudsync" aria-label="Cloud Sync" data-tip="Cloud Sync (PikPak / GDrive)">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
             </svg>
           </button>
         </div>
@@ -151,9 +156,15 @@
               <path d="M5.463 4.433A9.961 9.961 0 0 1 12 2c5.523 0 10 4.477 10 10 0 2.136-.67 4.116-1.81 5.74L17 12h3A8 8 0 0 0 6.46 6.228l-.997-1.795zm13.074 15.134A9.961 9.961 0 0 1 12 22C6.477 22 2 17.523 2 12c0-2.136.67-4.116 1.81-5.74L7 12H4a8 8 0 0 0 13.54 5.772l.997 1.795z"></path>
             </svg>
           </button>
+          <button id="explorer-split-btn" class="explorer-btn-icon" data-tip="Toggle Split Screen (Side-by-Side)">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <line x1="12" y1="3" x2="12" y2="21"/>
+            </svg>
+          </button>
         </div>
       </div>
-      <div class="explorer-body">
+      <div class="explorer-body" id="explorer-single-body">
         <div class="explorer-table-header">
           <span class="col-check"></span>
           <span class="col-name">Name</span>
@@ -162,6 +173,90 @@
         </div>
         <div class="explorer-list" id="explorer-list">
           <!-- Items will be populated here -->
+        </div>
+      </div>
+      <!-- Split View Dual Pane Layout -->
+      <div class="explorer-split-container" id="explorer-split-container" style="display: none;">
+        <!-- Left Pane (PC / Source) -->
+        <div class="explorer-pane card" id="explorer-pane-left">
+          <div class="explorer-pane-header">
+            <div class="explorer-pane-title-group">
+              <div class="custom-dropdown" id="dropdown-explorer-left-device">
+                <button type="button" class="dropdown-trigger">
+                  <span class="dropdown-selected">Select storage...</span>
+                  <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="dropdown-menu"></div>
+              </div>
+            </div>
+            <div class="explorer-pane-actions">
+              <button class="explorer-btn-icon" id="explorer-left-up-btn" data-tip="Up Directory">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <button class="explorer-btn-icon" id="explorer-left-refresh-btn" data-tip="Refresh">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="explorer-pane-path-bar" id="explorer-left-path-bar"></div>
+          <div class="explorer-pane-search">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="explorer-left-search" placeholder="Search..." autocomplete="off" />
+          </div>
+          <div class="explorer-table-header">
+            <span class="col-check"></span>
+            <span class="col-name">Name</span>
+            <span class="col-size">Size</span>
+          </div>
+          <div class="explorer-list" id="explorer-left-list"></div>
+        </div>
+
+        <!-- Transfer Center Action Column -->
+        <div class="explorer-split-center-col">
+          <button class="cloud-beam-btn" id="explorer-split-transfer-right" data-tip="Transfer Selected Items to Right Pane">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="9 18 15 12 9 6"/>
+            </svg>
+          </button>
+          <button class="cloud-beam-btn" id="explorer-split-transfer-left" data-tip="Transfer Selected Items to Left Pane">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Right Pane (FTP / Destination) -->
+        <div class="explorer-pane card" id="explorer-pane-right">
+          <div class="explorer-pane-header">
+            <div class="explorer-pane-title-group">
+              <div class="custom-dropdown" id="dropdown-explorer-right-device">
+                <button type="button" class="dropdown-trigger">
+                  <span class="dropdown-selected">Select storage...</span>
+                  <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="dropdown-menu"></div>
+              </div>
+            </div>
+            <div class="explorer-pane-actions">
+              <button class="explorer-btn-icon" id="explorer-right-up-btn" data-tip="Up Directory">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <button class="explorer-btn-icon" id="explorer-right-refresh-btn" data-tip="Refresh">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="explorer-pane-path-bar" id="explorer-right-path-bar"></div>
+          <div class="explorer-pane-search">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="explorer-right-search" placeholder="Search..." autocomplete="off" />
+          </div>
+          <div class="explorer-table-header">
+            <span class="col-check"></span>
+            <span class="col-name">Name</span>
+            <span class="col-size">Size</span>
+          </div>
+          <div class="explorer-list" id="explorer-right-list"></div>
         </div>
       </div>
     </div>
@@ -182,6 +277,12 @@
         <input type="file" id="dropzone-input" multiple style="display:none" />
       </div>
       <div class="qr-panel">
+        <div class="qr-protocol-toggle" id="qr-proto-toggle">
+          <button type="button" class="qr-proto-btn active" id="qr-proto-http" data-proto="http">HTTP</button>
+          <button type="button" class="qr-proto-btn" id="qr-proto-https" data-proto="https">
+            <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>HTTPS
+          </button>
+        </div>
         <div class="qr-frame" id="qr-frame" role="button" tabindex="0" aria-label="Enlarge QR code">
           <div id="qr-skeleton" class="skeleton-shimmer" style="position:absolute;inset:0;border-radius:inherit;z-index:0;min-height:100px"></div>
           <img id="qr-image" alt="" style="position:relative;z-index:1;display:none" />
@@ -193,7 +294,7 @@
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="11" y1="8.5" x2="11" y2="13.5"/><line x1="8.5" y1="11" x2="13.5" y2="11"/></svg>
           </span>
         </div>
-        <p class="qr-caption">Scan to pair with your phone · click the code to enlarge</p>
+        <p class="qr-caption" id="qr-caption">Scan to pair with your phone · click the code to enlarge</p>
         <div class="qr-url-row">
           <input type="text" id="qr-url-text" readonly class="qr-url-input" aria-label="Pairing link" />
           <button id="qr-copy-btn" class="qr-copy-btn" aria-label="Copy pairing link">Copy</button>
@@ -400,5 +501,131 @@
   </template>
 
   <script src="main.js"></script>
+
+  <!-- Cloud Sync template -->
+  <template id="view-cloudsync">
+    <div class="cloud-container">
+      <div class="cloud-header">
+        <div class="cloud-title-group">
+          <h2 class="cloud-title">Cloud Beam</h2>
+          <span class="cloud-badge">Rclone Direct Pipe</span>
+        </div>
+        <div class="cloud-actions">
+          <button class="cloud-btn-subtle" id="cloud-btn-profiles">Configure Remotes</button>
+        </div>
+      </div>
+
+      <div class="cloud-bridge-grid">
+        <!-- Source Pane -->
+        <div class="cloud-pane card">
+          <div class="cloud-pane-header">
+            <div class="cloud-pane-title">Source</div>
+            <div class="custom-dropdown" id="dropdown-cloud-source-remote" data-value="PIKKY">
+              <button type="button" class="dropdown-trigger">
+                <span class="dropdown-selected">PikPak (Loopback Bridge)</span>
+                <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="dropdown-menu">
+                <div class="dropdown-item selected" data-value="PIKKY">PikPak (Loopback Bridge)</div>
+                <div class="dropdown-item" data-value="GDRIVE">Google Drive</div>
+                <div class="dropdown-item" data-value="LOCAL">Local Storage</div>
+              </div>
+            </div>
+          </div>
+          <div class="cloud-path-bar">
+            <button class="cloud-btn-icon" id="cloud-source-up"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>
+            <input type="text" class="cloud-path-input" id="cloud-source-path" value="" placeholder="/" />
+            <button class="cloud-btn-icon" id="cloud-source-refresh"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
+          </div>
+          <div class="cloud-file-list" id="cloud-source-files">
+            <div class="cloud-empty">Select or load files...</div>
+          </div>
+        </div>
+
+        <!-- Transfer Center Action -->
+        <div class="cloud-transfer-col">
+          <button class="cloud-beam-btn" id="cloud-start-btn" data-tip="Beam Selected Items to Destination">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none">
+              <path opacity="0.25" d="M3 12C3 4.5885 4.5885 3 12 3C19.4115 3 21 4.5885 21 12C21 19.4115 19.4115 21 12 21C4.5885 21 3 19.4115 3 12Z" fill="currentColor"></path>
+              <path d="M3 12C3 4.5885 4.5885 3 12 3C19.4115 3 21 4.5885 21 12C21 19.4115 19.4115 21 12 21C4.5885 21 3 19.4115 3 12Z" stroke="currentColor" stroke-width="2"></path>
+              <path d="M16 12L8 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+              <path d="M13 15L15.913 12.087V12.087C15.961 12.039 15.961 11.961 15.913 11.913V11.913L13 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Destination Pane -->
+        <div class="cloud-pane card">
+          <div class="cloud-pane-header">
+            <div class="cloud-pane-title">Destination</div>
+            <div class="custom-dropdown" id="dropdown-cloud-dest-remote" data-value="GDRIVE">
+              <button type="button" class="dropdown-trigger">
+                <span class="dropdown-selected">Google Drive</span>
+                <svg class="dropdown-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="dropdown-menu">
+                <div class="dropdown-item selected" data-value="GDRIVE">Google Drive</div>
+                <div class="dropdown-item" data-value="PIKKY">PikPak</div>
+                <div class="dropdown-item" data-value="LOCAL">Local Storage</div>
+              </div>
+            </div>
+          </div>
+          <div class="cloud-path-bar">
+            <button class="cloud-btn-icon" id="cloud-dest-up"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>
+            <input type="text" class="cloud-path-input" id="cloud-dest-path" value="" placeholder="/" />
+            <button class="cloud-btn-icon" id="cloud-dest-refresh"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
+          </div>
+          <div class="cloud-file-list" id="cloud-dest-files">
+            <div class="cloud-empty">Select destination path...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Job Dashboard -->
+      <div class="cloud-job-card card" id="cloud-job-card" style="display:none;">
+        <div class="cloud-job-header">
+          <div>
+            <span class="cloud-job-title" id="cloud-job-status-text">Transferring</span>
+            <span class="cloud-job-path" id="cloud-job-desc"></span>
+          </div>
+          <button class="cloud-btn-stop" id="cloud-cancel-btn">Stop</button>
+        </div>
+        <div class="cloud-progress-track">
+          <div class="cloud-progress-bar" id="cloud-progress-bar" style="width: 0%;"></div>
+        </div>
+        <div class="cloud-stats-grid">
+          <div>Transferred: <span id="cloud-stat-transferred">0 B</span> / <span id="cloud-stat-total">0 B</span></div>
+          <div>Speed: <span id="cloud-stat-speed">0 B/s</span></div>
+          <div>ETA: <span id="cloud-stat-eta">—</span></div>
+        </div>
+        <div class="cloud-log-line" id="cloud-live-log" style="margin-top:8px; font-size:11px; font-family:var(--font-mono); color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Starting engine...</div>
+      </div>
+    </div>
+
+    <!-- Remote Profile Modal -->
+    <div class="cloud-modal-backdrop" id="cloud-profile-modal" style="display:none;">
+      <div class="cloud-modal-content card">
+        <div class="cloud-modal-header">
+          <h3>Rclone Remote Configurations</h3>
+          <button class="modal-close" id="cloud-modal-close">&times;</button>
+        </div>
+        <div class="cloud-modal-body">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:12px;">
+            <p class="setting-hint" style="margin:0; font-size:12px; line-height:1.4;">Configure PIKKY (WebDAV) & GDRIVE remotes:</p>
+            <label class="cloud-btn-subtle" style="white-space:nowrap; flex-shrink:0;">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <span>Upload rclone.conf</span>
+              <input type="file" id="cloud-conf-file-input" accept=".conf,.txt" style="display:none;" />
+            </label>
+          </div>
+          <textarea class="cloud-conf-editor" id="cloud-conf-text" rows="10" placeholder="[PIKKY]&#10;type = webdav&#10;url = https://dav.mypikpak.com&#10;user = ...&#10;pass = ...&#10;&#10;[GDRIVE]&#10;type = drive&#10;token = {...}"></textarea>
+          <div class="cloud-modal-actions">
+            <button class="cloud-btn-action" id="cloud-conf-save-btn">Save Configuration</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+
 </body>
 </html>

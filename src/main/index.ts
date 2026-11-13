@@ -1,3 +1,4 @@
+import { RcloneService } from './rclone-service';
 /**
  * LANBeam — Electron main process entry.
  *
@@ -45,7 +46,8 @@ const DOWNLOAD_DIR = path.join(app.getPath('downloads'), 'LANBeam');
 
 function currentDownloadDir(): string {
   const d = store?.settings?.downloadDir;
-  return d && path.isAbsolute(d) ? d : DOWNLOAD_DIR;
+  if (!d || d === app.getPath('downloads')) return DOWNLOAD_DIR;
+  return path.isAbsolute(d) ? d : DOWNLOAD_DIR;
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -84,6 +86,7 @@ let httpClose: (() => Promise<void>) | null = null; // HTTP server shutdown hand
 // self-test its own transfer engine without being a paired device.
 let speedtestKey = randomBytes(24).toString('base64url');
 let lanBeamIpUrl = '';   // direct-IP fallback link shown under the QR
+let lanBeamHttpsUrl = ''; // HTTPS URL for secure-context features (folder picker / Drive)
 
 // ---------------------------------------------------------------------------
 // UI scaling — supports 4K / 2K high-DPI panels.
@@ -196,7 +199,7 @@ async function buildTray() {
   tray.on('click', () => mainWindow?.show() ?? createWindow());
 }
 
-let currentQr: { url: string; png: string; token: string } | null = null;
+let currentQr: { url: string; png: string; token: string; httpsUrl?: string; httpsPng?: string } | null = null;
 
 async function refreshQr() {
   if (!pairManager || !store || !baseUrl) return null;
@@ -207,7 +210,20 @@ async function refreshQr() {
     color: { dark: '#000000', light: '#FFFFFF' },
     errorCorrectionLevel: 'M',
   });
-  currentQr = { url, png, token };
+  let httpsPng: string | undefined;
+  let httpsPairUrl: string | undefined;
+  if (lanBeamHttpsUrl) {
+    httpsPairUrl = `${lanBeamHttpsUrl}/pair?token=${token}`;
+    try {
+      httpsPng = await QRCode.toDataURL(httpsPairUrl, {
+        margin: 1,
+        width: 320,
+        color: { dark: '#000000', light: '#FFFFFF' },
+        errorCorrectionLevel: 'M',
+      });
+    } catch {}
+  }
+  currentQr = { url, png, token, httpsUrl: httpsPairUrl || lanBeamHttpsUrl || undefined, httpsPng };
   mainWindow?.webContents.send('pairing:qr', currentQr);
   return currentQr;
 }
@@ -221,6 +237,7 @@ function registerIpc() {
     httpUrl: baseUrl,
     httpPort,
     ipUrl: lanBeamIpUrl,            // direct-IP fallback for the QR panel
+    httpsUrl: lanBeamHttpsUrl,       // secure-context URL (folder picker / Drive on Android)
     permanentHost: PERMANENT_HOST,
     nativeCoreAvailable: isNativeCoreAvailable(),
     appVersion: APP_VERSION,
@@ -561,12 +578,20 @@ function registerIpc() {
     let lastProgress = 0;
 
     const sparklineHistory: number[] = [];
-    const knownTotal = opts.totalBytes && opts.totalBytes > 0 ? opts.totalBytes : 0;
+    let knownTotal = opts.totalBytes && opts.totalBytes > 0 ? opts.totalBytes : 0;
 
     const emitProgress = (b: number) => {
       bytesSent += b;
+      sendProgressEvent();
+    };
+    (emitProgress as any).setTotalBytes = (newTotal: number) => {
+      knownTotal = newTotal;
+      sendProgressEvent(true);
+    };
+
+    const sendProgressEvent = (force = false) => {
       const now = Date.now();
-      if (now - lastProgress > 100) {
+      if (force || now - lastProgress > 100) {
         lastProgress = now;
         const elapsedSec = (now - startTime) / 1000 || 0.001;
         const mbps = (bytesSent * 8) / (elapsedSec * 1024 * 1024);
@@ -598,10 +623,12 @@ function registerIpc() {
       }
     };
 
+    let skippedInfo: Array<{ name: string; reason: string }> | undefined;
     try {
       // 1. FTP -> PC
       if (opts.sourceDeviceId.startsWith('ftp-') && !opts.targetDeviceId.startsWith('ftp-')) {
-        await explorerService.downloadFtpItem(opts.sourceDeviceId, opts.sourcePath, opts.targetDir, emitProgress);
+        const dlRes = await explorerService.downloadFtpItem(opts.sourceDeviceId, opts.sourcePath, opts.targetDir, emitProgress);
+        if (dlRes?.skippedFiles?.length) skippedInfo = dlRes.skippedFiles;
       }
       // 2. PC -> FTP
       else if (!opts.sourceDeviceId.startsWith('ftp-') && opts.targetDeviceId.startsWith('ftp-')) {
@@ -633,6 +660,7 @@ function registerIpc() {
         completedAt: Date.now(),
         averageThroughputMbps: avgMbps,
         status: 'complete' as const,
+        skippedFiles: skippedInfo,
       };
 
       mainWindow?.webContents.send('transfer:event', {
@@ -691,6 +719,46 @@ function registerIpc() {
       au.quitAndInstall(false, true);
     } catch (err) { console.warn('[update] install failed:', (err as any).message); }
   });
+  // ── Cloud Transfer (Rclone) Handlers ─────────────────────────────────────
+  const rcloneService = RcloneService.getInstance();
+
+  ipcMain.handle('cloud:list-profiles', async () => {
+    return rcloneService.listProfiles();
+  });
+
+  ipcMain.handle('cloud:save-profile', async (_e, profile) => {
+    rcloneService.saveProfile(profile);
+    return true;
+  });
+
+  ipcMain.handle('cloud:delete-profile', async (_e, profileId) => {
+    rcloneService.deleteProfile(profileId);
+    return true;
+  });
+
+  ipcMain.handle('cloud:list-remote-files', async (_e, { profileId, remote, subPath }) => {
+    return rcloneService.listRemoteFiles(profileId, remote, subPath || '');
+  });
+
+  ipcMain.handle('cloud:start-transfer', async (_e, opts) => {
+    return rcloneService.startTransfer(
+      opts.profileId,
+      opts.sourceRemote,
+      opts.sourceSubPath,
+      opts.destRemote,
+      opts.destSubPath,
+      opts.selectedItems || [],
+      (status) => {
+        mainWindow?.webContents.send('cloud:transfer-progress', status);
+      }
+    );
+  });
+
+  ipcMain.handle('cloud:cancel-transfer', async (_e, jobId) => {
+    rcloneService.cancelTransfer(jobId);
+    return true;
+  });
+
 
   // Forward orchestrator events to the renderer
   orchestrator!.on('event', (ev: OrchestratorEvent) => {
@@ -805,7 +873,9 @@ function startNetworkWatcher() {
     lanBeamIpUrl = url;
     restartMdns();
     // Order matters: URLs first, then the fresh QR (the renderer repaints on 'pairing:qr').
-    mainWindow?.webContents.send('network:changed', { ipUrl: url, httpUrl: url });
+    const httpsIpUrl = lanBeamHttpsUrl ? lanBeamHttpsUrl.replace(/\/\/[^:]+/, `//${ip}`) : '';
+    if (httpsIpUrl) lanBeamHttpsUrl = httpsIpUrl;
+    mainWindow?.webContents.send('network:changed', { ipUrl: url, httpUrl: url, httpsUrl: httpsIpUrl });
     await refreshQr();
   };
   const check = () => {
@@ -873,6 +943,7 @@ async function boot() {
     store,
     orchestrator,
     downloadDir: DOWNLOAD_DIR,
+    getDownloadDir: currentDownloadDir,
     onDevicePaired: (_device) => {
       mainWindow?.webContents.send('devices:updated', store!.pairedDevices);
       mainWindow?.webContents.send('explorer:devices-updated');
@@ -882,17 +953,22 @@ async function boot() {
     },
     // Permanent + direct links for /api/state — closures over the module
     // vars because the definitive port/URL only settle after bind + mDNS.
-    links: () => ({ permanent: baseUrl || undefined, ip: lanBeamIpUrl || undefined }),
+    links: () => ({ permanent: baseUrl || undefined, ip: lanBeamIpUrl || undefined, https: lanBeamHttpsUrl || undefined }),
     speedtestKey,
   });
   httpPort = httpHandle.port;
   httpClose = httpHandle.close;
+  if (httpHandle.httpsUrl) {
+    lanBeamHttpsUrl = httpHandle.httpsUrl;
+    log.info(`[https] secure context server: ${lanBeamHttpsUrl}`);
+  }
 
   // The QR / pairing URL: use the direct LAN IP by default so phones never
   // hit mDNS / .local DNS resolution issues (DNS_PROBE_POSSIBLE).
   const ipUrl = `http://${lanIp}:${httpPort}`;
   baseUrl = ipUrl;
   lanBeamIpUrl = ipUrl;
+  if (httpHandle.httpsUrl) lanBeamHttpsUrl = httpHandle.httpsUrl.replace(/\/\/[^:]+/, `//${lanIp}`);
   log.info(`[boot] pairing URL: ${baseUrl}`);
 
   await registerIpc();

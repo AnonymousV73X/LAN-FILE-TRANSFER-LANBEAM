@@ -1,3 +1,4 @@
+import { sanitizeWindowsFilename } from './ftp-client';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -306,37 +307,80 @@ class ExplorerService {
     remotePath: string,
     localDestDir: string,
     onProgress?: (bytes: number) => void
-  ): Promise<void> {
+  ): Promise<{ skippedFiles: Array<{ name: string; reason: string }> }> {
     const cfg = this.ftpConfigs.get(deviceId);
     if (!cfg) throw new Error(`FTP device ${deviceId} not found`);
     const client = new SimpleFtpClient(cfg);
 
     const normalizedRemote = remotePath.replace(/^ftp:\/\/[^/]+/, '') || '/';
     const remoteBaseName = path.posix.basename(normalizedRemote) || 'download';
-    const localTarget = path.join(localDestDir, remoteBaseName);
+    const localTarget = path.join(localDestDir, process.platform === 'win32' ? sanitizeWindowsFilename(remoteBaseName) : remoteBaseName);
 
     console.log('[FTP Download] remotePath:', remotePath, 'normalized:', normalizedRemote, 'target:', localTarget);
     let isDir = false;
     try {
-      const parentDir = path.posix.dirname(normalizedRemote);
-      const siblings = await client.list(parentDir === '.' ? '/' : parentDir);
-      const targetEntry = siblings.find(s => s.name === remoteBaseName);
-      if (targetEntry && targetEntry.isDirectory) isDir = true;
-    } catch (e) {
-      console.warn('[FTP Download] parent list check failed, assuming file:', e);
+      // 1. Try direct listing of the remote path — if it succeeds, it's a directory!
+      await client.list(normalizedRemote);
+      isDir = true;
+    } catch (_) {
+      // 2. Otherwise check parent listing
+      try {
+        const parentDir = path.posix.dirname(normalizedRemote);
+        const siblings = await client.list(parentDir === '.' ? '/' : parentDir);
+        const normalizeClean = (s: string) => s.replace(/[\uFFFD\u00A0\s_+\-\[\]().#]/g, '').toLowerCase();
+        const targetClean = normalizeClean(remoteBaseName);
+        const targetEntry = siblings.find(s => {
+          if (s.name === remoteBaseName) return true;
+          return targetClean.length > 3 && normalizeClean(s.name) === targetClean;
+        });
+        if (targetEntry && targetEntry.isDirectory) isDir = true;
+      } catch (e) {
+        console.warn('[FTP Download] directory check failed, assuming file:', e);
+      }
     }
 
+    const skippedFiles: Array<{ name: string; reason: string }> = [];
+
     if (isDir) {
+      // Pre-calculate total folder bytes so progress reflects true folder size
+      let folderTotalBytes = 0;
+      const scanFolderBytes = async (dir: string) => {
+        try {
+          const items = await client.list(dir);
+          for (const it of items) {
+            if (it.isDirectory) {
+              await scanFolderBytes(dir.endsWith('/') ? dir + it.name : dir + '/' + it.name);
+            } else if (it.size > 0) {
+              folderTotalBytes += it.size;
+            }
+          }
+        } catch (_) {}
+      };
+      await scanFolderBytes(normalizedRemote);
+      if (folderTotalBytes > 0 && (onProgress as any)?.setTotalBytes) {
+        (onProgress as any).setTotalBytes(folderTotalBytes);
+      }
       const walkDownload = async (remDir: string, locDir: string) => {
         await fs.mkdir(locDir, { recursive: true });
         const list = await client.list(remDir);
         for (const item of list) {
           const itemRem = remDir.endsWith('/') ? remDir + item.name : remDir + '/' + item.name;
-          const itemLoc = path.join(locDir, item.name);
+          const cleanItemName = process.platform === 'win32' ? sanitizeWindowsFilename(item.name) : item.name;
+          const itemLoc = path.join(locDir, cleanItemName);
           if (item.isDirectory) {
             await walkDownload(itemRem, itemLoc);
           } else {
-            await client.downloadFile(itemRem, itemLoc, onProgress);
+            try {
+              await client.downloadFile(itemRem, itemLoc, onProgress);
+            } catch (err: any) {
+              const errMsg = err?.message || String(err);
+              let reason = errMsg;
+              if (item.name.includes('?') || errMsg.includes('550')) {
+                reason = "Phone's FTP server rejects files with special/trademark characters (?) in their name.";
+              }
+              skippedFiles.push({ name: item.name, reason });
+              console.warn(`[FTP Download] Skipped file "${item.name}":`, reason);
+            }
           }
         }
       };
@@ -344,6 +388,8 @@ class ExplorerService {
     } else {
       await client.downloadFile(normalizedRemote, localTarget, onProgress);
     }
+
+    return { skippedFiles };
   }
 
   async uploadToFtp(

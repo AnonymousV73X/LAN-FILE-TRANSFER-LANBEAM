@@ -3,7 +3,7 @@ name = "lanbeam-core"
 version = "1.0.0"
 edition = "2021"
 description = "LANBeam native transfer engine: BLAKE3 + zstd + Merkle + QUIC + zero-copy I/O."
-license = "MIT"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]

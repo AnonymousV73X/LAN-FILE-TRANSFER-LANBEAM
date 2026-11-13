@@ -8,6 +8,23 @@ const explorerState = {
   searchDebounceTimer: null,
   selectedPaths: new Set(),
   devicePaths: {}, // last visited path per deviceId
+  isSplitView: false,
+  splitLeft: {
+    deviceId: null,
+    currentPath: "",
+    items: [],
+    historyStack: [],
+    selectedPaths: new Set(),
+    searchQuery: "",
+  },
+  splitRight: {
+    deviceId: null,
+    currentPath: "",
+    items: [],
+    historyStack: [],
+    selectedPaths: new Set(),
+    searchQuery: "",
+  },
 };
 function initCustomDropdown(id, onChange) {
   const root = document.getElementById(id);
@@ -208,9 +225,11 @@ const _viewBinders = {
   home: () => bindHome(),
   devices: () => bindDevices(),
   history: () => renderHistory(),
+  cloudsync: () => refreshCloudSync(),
   settings: () => bindSettings(),
   explorer: () => bindExplorer(),
   speedtest: () => bindSpeedTest(),
+  cloudsync: () => bindCloudSync(),
 };
 const _viewRefresh = {
   home: () => {
@@ -3234,6 +3253,13 @@ function bindExplorer() {
     loadExplorerDevices();
   });
 
+  const splitBtn = document.getElementById("explorer-split-btn");
+  splitBtn?.addEventListener("click", () => {
+    toggleExplorerSplitView();
+  });
+
+  initExplorerSplitControls();
+
   loadExplorerDevices();
 }
 
@@ -3265,6 +3291,7 @@ async function loadExplorerDevices() {
     console.log("[Explorer] getDevices returned:", devices);
     explorerState.devices = devices || [];
     renderExplorerDevicesBar();
+    updateExplorerSplitSelects();
     if (!explorerState.currentDeviceId && devices.length > 0) {
       selectExplorerDevice(devices[0].id, devices[0].rootPath);
     }
@@ -4652,6 +4679,507 @@ function showBatchTransferTargetModal(items, sourceDeviceId) {
   }
 }
 
+/* ==========================================================================
+   Explorer Split View (Dual-Pane Side-by-Side FTP / PC)
+   ========================================================================== */
+
+function toggleExplorerSplitView() {
+  explorerState.isSplitView = !explorerState.isSplitView;
+  const splitBtn = document.getElementById("explorer-split-btn");
+  const singleBody = document.getElementById("explorer-single-body");
+  const splitContainer = document.getElementById("explorer-split-container");
+  const devBar = document.getElementById("explorer-devices-bar");
+  const breadcrumbs = document.getElementById("explorer-breadcrumbs");
+  const upBtn = document.getElementById("explorer-up-btn");
+  const searchBox = document.querySelector(".explorer-search-box");
+
+  if (explorerState.isSplitView) {
+    splitBtn?.classList.add("active");
+    if (singleBody) singleBody.style.display = "none";
+    if (splitContainer) splitContainer.style.display = "grid";
+    if (devBar) devBar.style.display = "none";
+    if (breadcrumbs) breadcrumbs.style.display = "none";
+    if (upBtn) upBtn.style.display = "none";
+    if (searchBox) searchBox.style.display = "none";
+
+    setupExplorerSplitDefaults();
+  } else {
+    splitBtn?.classList.remove("active");
+    if (singleBody) singleBody.style.display = "flex";
+    if (splitContainer) splitContainer.style.display = "none";
+    if (devBar) devBar.style.display = "flex";
+    if (breadcrumbs) breadcrumbs.style.display = "flex";
+    if (upBtn) upBtn.style.display = "inline-flex";
+    if (searchBox) searchBox.style.display = "flex";
+  }
+}
+
+function updateExplorerSplitSelects() {
+  const leftRoot = document.getElementById("dropdown-explorer-left-device");
+  const rightRoot = document.getElementById("dropdown-explorer-right-device");
+  if (!leftRoot || !rightRoot) return;
+
+  const devices = explorerState.devices || [];
+
+  const setupDropdown = (root, currentDevId, onSelect) => {
+    const trigger = root.querySelector(".dropdown-trigger");
+    const label = root.querySelector(".dropdown-selected");
+    const menu = root.querySelector(".dropdown-menu");
+    if (!trigger || !label || !menu) return;
+
+    const currentDev = devices.find(d => d.id === currentDevId);
+    if (currentDev) {
+      const icon = currentDev.id.startsWith("ftp-") ? "📱" : "💻";
+      label.textContent = `${icon} ${currentDev.name}`;
+      root.dataset.value = currentDev.id;
+    } else {
+      label.textContent = "Select storage...";
+    }
+
+    menu.innerHTML = "";
+    devices.forEach((dev) => {
+      const isFtp = dev.id.startsWith("ftp-");
+      const icon = isFtp ? "📱" : "💻";
+      const item = document.createElement("div");
+      item.className = "dropdown-item" + (dev.id === currentDevId ? " selected" : "");
+      item.dataset.value = dev.id;
+      item.textContent = `${icon} ${dev.name}`;
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        label.textContent = `${icon} ${dev.name}`;
+        root.dataset.value = dev.id;
+        menu.querySelectorAll(".dropdown-item").forEach(it => it.classList.toggle("selected", it === item));
+        root.classList.remove("open");
+        onSelect(dev.id);
+      });
+      menu.appendChild(item);
+    });
+
+    // Add connect FTP item option
+    const addFtpItem = document.createElement("div");
+    addFtpItem.className = "dropdown-item";
+    addFtpItem.style.cssText = "color: var(--accent-color); font-weight: 600; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px;";
+    addFtpItem.innerHTML = `<span>+ Connect Phone FTP...</span>`;
+    addFtpItem.addEventListener("click", (e) => {
+      e.stopPropagation();
+      root.classList.remove("open");
+      openFtpModal();
+    });
+    menu.appendChild(addFtpItem);
+  };
+
+  setupDropdown(leftRoot, explorerState.splitLeft.deviceId, (devId) => {
+    const dev = explorerState.devices.find(d => d.id === devId);
+    explorerState.splitLeft.deviceId = devId;
+    explorerState.splitLeft.historyStack = [];
+    explorerState.splitLeft.selectedPaths.clear();
+    const p = explorerState.devicePaths[devId] || dev?.rootPath || "";
+    loadSplitPaneDirectory("left", devId, p);
+  });
+
+  setupDropdown(rightRoot, explorerState.splitRight.deviceId, (devId) => {
+    const dev = explorerState.devices.find(d => d.id === devId);
+    explorerState.splitRight.deviceId = devId;
+    explorerState.splitRight.historyStack = [];
+    explorerState.splitRight.selectedPaths.clear();
+    const p = explorerState.devicePaths[devId] || dev?.rootPath || "";
+    loadSplitPaneDirectory("right", devId, p);
+  });
+}
+
+function setupExplorerSplitDefaults() {
+  const devices = explorerState.devices || [];
+  const pcDev = devices.find(d => !d.id.startsWith("ftp-")) || devices[0];
+  const ftpDev = devices.find(d => d.id.startsWith("ftp-")) || devices[1] || devices[0];
+
+  if (!explorerState.splitLeft.deviceId && pcDev) {
+    explorerState.splitLeft.deviceId = pcDev.id;
+    explorerState.splitLeft.currentPath = explorerState.devicePaths[pcDev.id] || pcDev.rootPath || "";
+  }
+  if (!explorerState.splitRight.deviceId && ftpDev) {
+    explorerState.splitRight.deviceId = ftpDev.id;
+    explorerState.splitRight.currentPath = explorerState.devicePaths[ftpDev.id] || ftpDev.rootPath || "";
+  }
+
+  updateExplorerSplitSelects();
+  if (explorerState.splitLeft.deviceId) {
+    loadSplitPaneDirectory("left", explorerState.splitLeft.deviceId, explorerState.splitLeft.currentPath);
+  }
+  if (explorerState.splitRight.deviceId) {
+    loadSplitPaneDirectory("right", explorerState.splitRight.deviceId, explorerState.splitRight.currentPath);
+  }
+}
+
+function initExplorerSplitControls() {
+  const leftDropdown = document.getElementById("dropdown-explorer-left-device");
+  const rightDropdown = document.getElementById("dropdown-explorer-right-device");
+
+  const bindTrigger = (root) => {
+    if (!root) return;
+    const trigger = root.querySelector(".dropdown-trigger");
+    trigger?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      document.querySelectorAll(".custom-dropdown.open").forEach((d) => {
+        if (d !== root) d.classList.remove("open");
+      });
+      root.classList.toggle("open");
+    });
+  };
+
+  bindTrigger(leftDropdown);
+  bindTrigger(rightDropdown);
+
+  const leftUp = document.getElementById("explorer-left-up-btn");
+  const rightUp = document.getElementById("explorer-right-up-btn");
+  const leftRefresh = document.getElementById("explorer-left-refresh-btn");
+  const rightRefresh = document.getElementById("explorer-right-refresh-btn");
+  const btnTransferRight = document.getElementById("explorer-split-transfer-right");
+  const btnTransferLeft = document.getElementById("explorer-split-transfer-left");
+
+  leftUp?.addEventListener("click", () => navigateSplitPaneUp("left"));
+  rightUp?.addEventListener("click", () => navigateSplitPaneUp("right"));
+
+  leftRefresh?.addEventListener("click", () => {
+    if (explorerState.splitLeft.deviceId) {
+      loadSplitPaneDirectory("left", explorerState.splitLeft.deviceId, explorerState.splitLeft.currentPath);
+    }
+  });
+
+  rightRefresh?.addEventListener("click", () => {
+    if (explorerState.splitRight.deviceId) {
+      loadSplitPaneDirectory("right", explorerState.splitRight.deviceId, explorerState.splitRight.currentPath);
+    }
+  });
+
+  btnTransferRight?.addEventListener("click", () => {
+    executeSplitTransfer("left", "right");
+  });
+
+  btnTransferLeft?.addEventListener("click", () => {
+    executeSplitTransfer("right", "left");
+  });
+
+  setupSplitPaneDragDrop("left");
+  setupSplitPaneDragDrop("right");
+
+  // Search / filter
+  ["left", "right"].forEach(side => {
+    const input = document.getElementById(`explorer-${side}-search`);
+    const paneState = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+    input?.addEventListener("input", () => {
+      paneState.searchQuery = input.value.toLowerCase().trim();
+      renderSplitPaneList(side);
+    });
+  });
+}
+
+function navigateSplitPaneUp(side) {
+  const paneState = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+  if (paneState.historyStack.length > 0) {
+    const prev = paneState.historyStack.pop();
+    loadSplitPaneDirectory(side, paneState.deviceId, prev);
+    return;
+  }
+  const curr = paneState.currentPath;
+  const parent = curr.replace(/[/\\][^/\\]+[/\\]?$/, "");
+  if (parent && parent !== curr) {
+    loadSplitPaneDirectory(side, paneState.deviceId, parent);
+  }
+}
+
+async function loadSplitPaneDirectory(side, deviceId, dirPath) {
+  const paneState = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+  const listEl = document.getElementById(`explorer-${side}-list`);
+  const pathBar = document.getElementById(`explorer-${side}-path-bar`);
+
+  if (listEl) {
+    listEl.innerHTML = Array.from({ length: 4 })
+      .map(() => `
+        <div class="skeleton-row" style="padding: 8px 12px;">
+          <div class="skeleton-shimmer" style="width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0;"></div>
+          <div class="skeleton-shimmer" style="width: 50%; height: 14px;"></div>
+          <div style="flex:1;"></div>
+          <div class="skeleton-shimmer" style="width: 50px; height: 12px;"></div>
+        </div>
+      `).join("");
+  }
+
+  try {
+    const res = await window.lanbeam.explorer.listDirectory({ deviceId, path: dirPath });
+    paneState.deviceId = deviceId;
+    paneState.currentPath = res.currentPath;
+    paneState.items = res.items || [];
+    explorerState.devicePaths[deviceId] = res.currentPath;
+
+    if (pathBar) {
+      const fullPath = res.currentPath || "/";
+      const isFtp = deviceId && deviceId.startsWith("ftp-");
+      const sep = isFtp ? "/" : (fullPath.includes("\\") ? "\\" : "/");
+      // For Windows: parts = ["C:", "Users", "user"] — skip [0] since it's the drive root crumb
+      const allParts = fullPath.replace(/[/\\]+$/, "").split(/[/\\]/).filter(Boolean);
+      const drivePart = !isFtp && allParts.length ? allParts[0] : null; // e.g. "C:"
+      const parts = isFtp ? allParts : allParts.slice(1); // skip drive from segment list
+
+      pathBar.innerHTML = "";
+
+      // Root crumb
+      const rootCrumb = document.createElement("span");
+      rootCrumb.className = "path-crumb";
+      rootCrumb.textContent = isFtp ? "/" : (drivePart || sep);
+      const rootTarget = isFtp ? "/" : (drivePart ? drivePart + sep : sep);
+      rootCrumb.addEventListener("click", () => {
+        paneState.historyStack.push(paneState.currentPath);
+        loadSplitPaneDirectory(side, deviceId, rootTarget);
+      });
+      pathBar.appendChild(rootCrumb);
+
+      // Segment crumbs
+      parts.forEach((part, idx) => {
+        const isLast = idx === parts.length - 1;
+        const sepEl = document.createElement("span");
+        sepEl.className = "path-crumb-sep";
+        sepEl.textContent = isFtp ? "/" : "\\";
+        pathBar.appendChild(sepEl);
+
+        const crumb = document.createElement("span");
+        crumb.className = "path-crumb" + (isLast ? " active" : "");
+        crumb.textContent = part;
+        if (!isLast) {
+          const targetPath = isFtp
+            ? "/" + parts.slice(0, idx + 1).join("/")
+            : drivePart + sep + parts.slice(0, idx + 1).join(sep);
+          crumb.addEventListener("click", () => {
+            paneState.historyStack.push(paneState.currentPath);
+            loadSplitPaneDirectory(side, deviceId, targetPath);
+          });
+        }
+        pathBar.appendChild(crumb);
+      });
+    }
+
+    // Clear search on navigation
+    paneState.searchQuery = "";
+    const searchInput = document.getElementById(`explorer-${side}-search`);
+    if (searchInput) searchInput.value = "";
+
+    renderSplitPaneList(side);
+  } catch (err) {
+    if (listEl) {
+      const isFtp = deviceId && deviceId.startsWith("ftp-");
+      const reconnectHtml = isFtp
+        ? `<button type="button" class="explorer-reconnect-btn" id="explorer-${side}-reconnect-btn">
+             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+             <span>Reconnect FTP</span>
+           </button>`
+        : '';
+      listEl.innerHTML = `
+        <div style="padding: 24px; text-align: center; color: var(--danger-color, #ef4444); font-size: 12.5px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+          <div style="font-weight: 600; margin-bottom: 4px;">Connection Error</div>
+          <div style="color: var(--text-muted); font-size: 12px; max-width: 280px; word-break: break-word;">${escapeHtml(err.message || "Failed to load directory")}</div>
+          ${reconnectHtml}
+        </div>
+      `;
+      if (isFtp) {
+        listEl.querySelector(`#explorer-${side}-reconnect-btn`)?.addEventListener("click", () => {
+          loadSplitPaneDirectory(side, deviceId, dirPath);
+        });
+      }
+    }
+  }
+}
+
+function renderSplitPaneList(side) {
+  const paneState = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+  const listEl = document.getElementById(`explorer-${side}-list`);
+  if (!listEl) return;
+  listEl.innerHTML = "";
+
+  const items = paneState.items;
+  if (!items || items.length === 0) {
+    listEl.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px;">Empty folder</div>';
+    return;
+  }
+
+  const q = paneState.searchQuery || "";
+  const filtered = q ? items.filter(it => it.name.toLowerCase().includes(q)) : items;
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px;">No matches</div>';
+    return;
+  }
+
+  filtered.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "explorer-row";
+    row.draggable = true;
+    row.setAttribute("data-item-path", item.path);
+
+    const isSelected = paneState.selectedPaths.has(item.path);
+    if (isSelected) row.classList.add("selected");
+
+    const iconSvg = item.isDirectory
+      ? '<span class="item-icon folder"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>'
+      : '<span class="item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg></span>';
+
+    const checkSvg = `<span class="explorer-row-checkbox" data-tip="Select"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,8 6,12 14,4"/></svg></span>`;
+    const sizeText = item.isDirectory ? "--" : formatBytes(item.size);
+
+    row.innerHTML = `
+      <span class="col-check">${checkSvg}</span>
+      <span class="col-name" style="font-size: 12.5px;">${iconSvg} <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(item.name)}</span></span>
+      <span class="col-size" style="width: 70px; font-size: 11px;">${sizeText}</span>
+    `;
+
+    // Click: folders navigate in, files toggle selection
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".explorer-row-checkbox")) return; // handled below
+      if (item.isDirectory) {
+        paneState.historyStack.push(paneState.currentPath);
+        loadSplitPaneDirectory(side, paneState.deviceId, item.path);
+      } else {
+        if (paneState.selectedPaths.has(item.path)) {
+          paneState.selectedPaths.delete(item.path);
+          row.classList.remove("selected");
+        } else {
+          paneState.selectedPaths.add(item.path);
+          row.classList.add("selected");
+        }
+      }
+    });
+
+    // Checkbox: always toggle selection regardless of type
+    const cb = row.querySelector(".explorer-row-checkbox");
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (paneState.selectedPaths.has(item.path)) {
+        paneState.selectedPaths.delete(item.path);
+        row.classList.remove("selected");
+      } else {
+        paneState.selectedPaths.add(item.path);
+        row.classList.add("selected");
+      }
+    });
+
+    // Drag start
+    row.addEventListener("dragstart", (e) => {
+      const draggedItems = paneState.selectedPaths.has(item.path)
+        ? items.filter(it => paneState.selectedPaths.has(it.path))
+        : [item];
+
+      e.dataTransfer.setData("application/json", JSON.stringify({
+        sourceSide: side,
+        sourceDeviceId: paneState.deviceId,
+        items: draggedItems,
+      }));
+      e.dataTransfer.effectAllowed = "copy";
+    });
+
+    listEl.appendChild(row);
+  });
+}
+
+function setupSplitPaneDragDrop(side) {
+  const paneEl = document.getElementById(`explorer-pane-${side}`);
+  if (!paneEl) return;
+
+  paneEl.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    paneEl.classList.add("drag-over");
+  });
+
+  paneEl.addEventListener("dragleave", (e) => {
+    if (!paneEl.contains(e.relatedTarget)) {
+      paneEl.classList.remove("drag-over");
+    }
+  });
+
+  paneEl.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    paneEl.classList.remove("drag-over");
+
+    try {
+      const dataStr = e.dataTransfer.getData("application/json");
+      if (!dataStr) return;
+      const data = JSON.parse(dataStr);
+      if (!data.items || data.items.length === 0) return;
+      if (data.sourceSide === side && data.sourceDeviceId === (side === "left" ? explorerState.splitLeft.deviceId : explorerState.splitRight.deviceId)) {
+        return;
+      }
+
+      const targetPane = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+      const targetDir = targetPane.currentPath || (targetPane.deviceId?.startsWith("ftp-") ? "/" : "C:\\");
+
+      await runSplitTransferBatch(data.items, data.sourceDeviceId, targetPane.deviceId, targetDir, side);
+    } catch (err) {
+      console.error("[Split Explorer] Drag drop failed:", err);
+      toast(err.message || "Drop failed");
+    }
+  });
+}
+
+async function executeSplitTransfer(fromSide, toSide) {
+  const fromPane = fromSide === "left" ? explorerState.splitLeft : explorerState.splitRight;
+  const toPane = toSide === "left" ? explorerState.splitLeft : explorerState.splitRight;
+
+  const selectedItems = fromPane.items.filter(it => fromPane.selectedPaths.has(it.path));
+  if (selectedItems.length === 0) {
+    toast(`Please select files in the ${fromSide} pane first.`);
+    return;
+  }
+
+  const targetDir = toPane.currentPath || (toPane.deviceId?.startsWith("ftp-") ? "/" : "C:\\");
+  await runSplitTransferBatch(selectedItems, fromPane.deviceId, toPane.deviceId, targetDir, toSide);
+}
+
+async function runSplitTransferBatch(items, sourceDeviceId, targetDeviceId, targetDir, destSide) {
+  const isOut = !sourceDeviceId.startsWith("ftp-");
+  const targetDev = explorerState.devices.find(d => d.id === targetDeviceId);
+  const peerName = targetDev?.name || (isOut ? "Phone Storage" : "PC Storage");
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const tid = "split-xfer-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+    updateTransferCard(
+      {
+        fileId: tid,
+        fileName: items.length > 1 ? `[${i + 1}/${items.length}] ${it.name}` : it.name,
+        totalBytes: it.isDirectory ? 0 : (it.size || 0),
+        bytesTransferred: 0,
+        peerName: peerName,
+        throughputMbps: 0,
+        etaMs: 0,
+        sparkline: [],
+      },
+      isOut ? "out" : "in",
+    );
+
+    try {
+      await window.lanbeam.explorer.transfer({
+        transferId: tid,
+        sourcePath: it.path,
+        targetDir: targetDir,
+        sourceDeviceId: sourceDeviceId,
+        targetDeviceId: targetDeviceId,
+        totalBytes: it.isDirectory ? 0 : (it.size || 0),
+      });
+    } catch (err) {
+      console.error("Split transfer failed:", it.name, err);
+      failTransferCard(err.message || "Transfer error", tid);
+    }
+  }
+
+  toast(`Transferred ${items.length} item(s) successfully!`);
+
+  // Clear selections on both panes after transfer
+  explorerState.splitLeft.selectedPaths.clear();
+  explorerState.splitRight.selectedPaths.clear();
+  renderSplitPaneList("left");
+  renderSplitPaneList("right");
+
+  loadSplitPaneDirectory(destSide, targetDeviceId, targetDir);
+}
 
 // ── Global data-tip tooltip (body-level, never clipped) ──────────────────
 (function () {
@@ -4668,13 +5196,27 @@ function showBatchTransferTargetModal(items, sourceDeviceId) {
     tip.textContent = text;
     const rect = el.getBoundingClientRect();
     tip.classList.remove('visible');
-    tip.style.left = (rect.left + rect.width / 2) + 'px';
-    tip.style.top = (rect.top - 32) + 'px';
-    tip.style.transform = 'translateX(-50%) translateY(2px)';
-    requestAnimationFrame(() => {
-      tip.style.transform = 'translateX(-50%) translateY(0)';
-      tip.classList.add('visible');
-    });
+    
+    // Position tooltip: if element is in the left sidebar, show to the right side of the element
+    if (rect.left < 80) {
+      tip.style.left = (rect.right + 10) + 'px';
+      tip.style.top = (rect.top + rect.height / 2) + 'px';
+      tip.style.transform = 'translateY(-50%) translateX(2px)';
+      requestAnimationFrame(() => {
+        tip.style.transform = 'translateY(-50%) translateX(0)';
+        tip.classList.add('visible');
+      });
+    } else {
+      // Top tooltip centered over target
+      let targetLeft = rect.left + rect.width / 2;
+      tip.style.left = Math.max(10, targetLeft) + 'px';
+      tip.style.top = (rect.top - 32) + 'px';
+      tip.style.transform = 'translateX(-50%) translateY(2px)';
+      requestAnimationFrame(() => {
+        tip.style.transform = 'translateX(-50%) translateY(0)';
+        tip.classList.add('visible');
+      });
+    }
     autoHide = setTimeout(hideTip, 3000);
   }
 
@@ -4697,3 +5239,389 @@ function showBatchTransferTargetModal(items, sourceDeviceId) {
   document.addEventListener('mousedown', hideTip, true);
 })();
 
+
+
+// ============================================================================
+// Cloud Sync Controller (PikPak <-> GDrive <-> Local via Rclone)
+// ============================================================================
+let _cloudState = {
+  profile: null,
+  sourceRemote: "PIKKY",
+  sourcePath: "",
+  sourceFiles: [],
+  sourceSelected: new Set(),
+  destRemote: "GDRIVE",
+  destPath: "",
+  destFiles: [],
+  currentJobId: null
+};
+
+async function bindCloudSync() {
+  const root = _panes["cloudsync"];
+  if (!root) return;
+
+  // Listen to live transfer updates from main process
+  window.lanbeam.cloud?.onTransferProgress((status) => {
+    _renderCloudProgress(status);
+  });
+
+  // Modal open/close
+  root.querySelector("#cloud-btn-profiles")?.addEventListener("click", () => {
+    const modal = root.querySelector("#cloud-profile-modal");
+    if (modal) {
+      modal.style.display = "flex";
+      const confArea = modal.querySelector("#cloud-conf-text");
+      if (confArea && _cloudState.profile) {
+        confArea.value = _cloudState.profile.rcloneConfig || "";
+      }
+    }
+  });
+
+  root.querySelector("#cloud-modal-close")?.addEventListener("click", () => {
+    const modal = root.querySelector("#cloud-profile-modal");
+    if (modal) modal.style.display = "none";
+  });
+
+  // Upload rclone.conf file
+  root.querySelector("#cloud-conf-file-input")?.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const content = evt.target?.result;
+      const confArea = root.querySelector("#cloud-conf-text");
+      if (confArea && typeof content === "string") {
+        confArea.value = content;
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  });
+
+  root.querySelector("#cloud-conf-save-btn")?.addEventListener("click", async () => {
+    const val = root.querySelector("#cloud-conf-text")?.value || "";
+    const p = _cloudState.profile || { id: "default", name: "Default" };
+    p.rcloneConfig = val;
+    await window.lanbeam.cloud.saveProfile(p);
+    _cloudState.profile = p;
+    const modal = root.querySelector("#cloud-profile-modal");
+    if (modal) modal.style.display = "none";
+    refreshCloudSync();
+  });
+
+  // Source controls
+  initCustomDropdown("dropdown-cloud-source-remote", (val) => {
+    _cloudState.sourceRemote = val;
+    _cloudState.sourcePath = "";
+    const pathInput = root.querySelector("#cloud-source-path");
+    if (pathInput) pathInput.value = "";
+    _loadCloudSourceFiles();
+  });
+
+  root.querySelector("#cloud-source-refresh")?.addEventListener("click", () => _loadCloudSourceFiles());
+  root.querySelector("#cloud-source-up")?.addEventListener("click", () => {
+    if (!_cloudState.sourcePath) return;
+    const parts = _cloudState.sourcePath.replace(/\\/g, "/").split("/").filter(Boolean);
+    parts.pop();
+    _cloudState.sourcePath = parts.join("/");
+    const input = root.querySelector("#cloud-source-path");
+    if (input) input.value = _cloudState.sourcePath;
+    _loadCloudSourceFiles();
+  });
+
+  root.querySelector("#cloud-source-path")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      _cloudState.sourcePath = e.target.value.trim();
+      _loadCloudSourceFiles();
+    }
+  });
+
+  // Destination controls
+  initCustomDropdown("dropdown-cloud-dest-remote", (val) => {
+    _cloudState.destRemote = val;
+    _cloudState.destPath = "";
+    const pathInput = root.querySelector("#cloud-dest-path");
+    if (pathInput) pathInput.value = "";
+    _loadCloudDestFiles();
+  });
+
+  root.querySelector("#cloud-dest-refresh")?.addEventListener("click", () => _loadCloudDestFiles());
+  root.querySelector("#cloud-dest-up")?.addEventListener("click", () => {
+    if (!_cloudState.destPath) return;
+    const parts = _cloudState.destPath.replace(/\\/g, "/").split("/").filter(Boolean);
+    parts.pop();
+    _cloudState.destPath = parts.join("/");
+    const input = root.querySelector("#cloud-dest-path");
+    if (input) input.value = _cloudState.destPath;
+    _loadCloudDestFiles();
+  });
+
+  root.querySelector("#cloud-dest-path")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      _cloudState.destPath = e.target.value.trim();
+      _loadCloudDestFiles();
+    }
+  });
+
+  // Start Transfer
+  root.querySelector("#cloud-start-btn")?.addEventListener("click", async () => {
+    if (!_cloudState.profile) {
+      alert("Please configure remotes first!");
+      return;
+    }
+    const selected = Array.from(_cloudState.sourceSelected);
+    try {
+      const jobId = await window.lanbeam.cloud.startTransfer({
+        profileId: _cloudState.profile.id,
+        sourceRemote: _cloudState.sourceRemote,
+        sourceSubPath: _cloudState.sourcePath,
+        destRemote: _cloudState.destRemote,
+        destSubPath: _cloudState.destPath,
+        selectedItems: selected
+      });
+      _cloudState.currentJobId = jobId;
+      const jobCard = root.querySelector("#cloud-job-card");
+      if (jobCard) jobCard.style.display = "block";
+      const desc = root.querySelector("#cloud-job-desc");
+      if (desc) {
+        if (selected.length === 1) {
+          desc.textContent = `${selected[0]} -> ${_cloudState.destRemote}:${_cloudState.destPath || '/'}`;
+        } else if (selected.length > 1) {
+          desc.textContent = `${selected.length} items -> ${_cloudState.destRemote}:${_cloudState.destPath || '/'}`;
+        } else {
+          desc.textContent = `All items -> ${_cloudState.destRemote}:${_cloudState.destPath || '/'}`;
+        }
+      }
+    } catch (err) {
+      alert("Transfer launch error: " + err.message);
+    }
+  });
+
+  // Cancel Transfer
+  root.querySelector("#cloud-cancel-btn")?.addEventListener("click", async () => {
+    if (_cloudState.currentJobId) {
+      await window.lanbeam.cloud.cancelTransfer(_cloudState.currentJobId);
+    }
+  });
+
+  refreshCloudSync();
+}
+
+async function refreshCloudSync() {
+  const root = _panes["cloudsync"];
+  if (!root || !window.lanbeam.cloud) return;
+  const profiles = await window.lanbeam.cloud.listProfiles();
+  if (profiles && profiles.length > 0) {
+    _cloudState.profile = profiles[0];
+  } else {
+    _cloudState.profile = { id: "default", name: "Default", rcloneConfig: "" };
+  }
+  _loadCloudSourceFiles();
+  _loadCloudDestFiles();
+}
+
+async function _loadCloudSourceFiles() {
+  const root = _panes["cloudsync"];
+  if (!root || !_cloudState.profile) return;
+  const listEl = root.querySelector("#cloud-source-files");
+  if (!listEl) return;
+  listEl.innerHTML = '<div class="cloud-empty">Fetching directory...</div>';
+
+  try {
+    const items = await window.lanbeam.cloud.listRemoteFiles({
+      profileId: _cloudState.profile.id,
+      remote: _cloudState.sourceRemote,
+      subPath: _cloudState.sourcePath
+    });
+    _cloudState.sourceFiles = items;
+    _cloudState.sourceSelected.clear();
+    _renderCloudFiles(listEl, items, true);
+  } catch (err) {
+    const isAuth = err.message && (err.message.includes("unauthenticated") || err.message.includes("please re-login") || err.message.includes("invalid_grant"));
+    listEl.innerHTML = `
+      <div class="cloud-empty" style="color:var(--text-muted); padding: 18px 12px;">
+        <div style="font-size:24px; margin-bottom:8px;">${isAuth ? "🔑" : "⚠️"}</div>
+        <div style="color:#fff; font-weight:600; margin-bottom:4px;">${isAuth ? "Remote Authentication Needed" : "Unable to list files"}</div>
+        <div style="font-size:11px; margin-bottom:12px; color:var(--text-muted);">${escapeHtml(err.message)}</div>
+        ${isAuth ? '<button class="cloud-btn-subtle" id="cloud-err-reauth-btn">Configure Remotes</button>' : ''}
+      </div>`;
+    listEl.querySelector("#cloud-err-reauth-btn")?.addEventListener("click", () => {
+      const modal = root.querySelector("#cloud-profile-modal");
+      if (modal) modal.style.display = "flex";
+    });
+  }
+}
+
+async function _loadCloudDestFiles() {
+  const root = _panes["cloudsync"];
+  if (!root || !_cloudState.profile) return;
+  const listEl = root.querySelector("#cloud-dest-files");
+  if (!listEl) return;
+  listEl.innerHTML = '<div class="cloud-empty">Fetching directory...</div>';
+
+  try {
+    const items = await window.lanbeam.cloud.listRemoteFiles({
+      profileId: _cloudState.profile.id,
+      remote: _cloudState.destRemote,
+      subPath: _cloudState.destPath
+    });
+    _cloudState.destFiles = items;
+    _renderCloudFiles(listEl, items, false);
+  } catch (err) {
+    const isAuth = err.message && (err.message.includes("unauthenticated") || err.message.includes("please re-login") || err.message.includes("invalid_grant"));
+    listEl.innerHTML = `
+      <div class="cloud-empty" style="color:var(--text-muted); padding: 18px 12px;">
+        <div style="font-size:24px; margin-bottom:8px;">${isAuth ? "🔑" : "⚠️"}</div>
+        <div style="color:#fff; font-weight:600; margin-bottom:4px;">${isAuth ? "Remote Authentication Needed" : "Unable to list destination"}</div>
+        <div style="font-size:11px; margin-bottom:12px; color:var(--text-muted);">${escapeHtml(err.message)}</div>
+        ${isAuth ? '<button class="cloud-btn-subtle" id="cloud-err-dest-reauth-btn">Configure Remotes</button>' : ''}
+      </div>`;
+    listEl.querySelector("#cloud-err-dest-reauth-btn")?.addEventListener("click", () => {
+      const modal = root.querySelector("#cloud-profile-modal");
+      if (modal) modal.style.display = "flex";
+    });
+  }
+}
+
+function _renderCloudFiles(container, items, isSource) {
+  if (!items || items.length === 0) {
+    container.innerHTML = '<div class="cloud-empty">Folder is empty</div>';
+    return;
+  }
+  container.innerHTML = "";
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "cloud-file-row";
+
+    const icon = item.IsDir
+      ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>';
+
+    const sizeStr = item.IsDir ? "DIR" : _formatCloudBytes(item.Size || 0);
+
+    const checkboxHtml = isSource ? `
+      <div class="cloud-item-check" data-tip="Select to beam">
+        <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2"><polyline points="2 6 5 9 10 3"/></svg>
+      </div>` : "";
+
+    row.innerHTML = `
+      ${checkboxHtml}
+      ${icon}
+      <span class="cloud-file-name" data-tip="${escapeHtml(item.Name)}">${escapeHtml(item.Name)}</span>
+      <span class="cloud-file-size">${sizeStr}</span>
+    `;
+
+    // Checkbox click selects/deselects item
+    const checkEl = row.querySelector(".cloud-item-check");
+    if (checkEl) {
+      checkEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (_cloudState.sourceSelected.has(item.Name)) {
+          _cloudState.sourceSelected.delete(item.Name);
+          row.classList.remove("selected");
+        } else {
+          _cloudState.sourceSelected.add(item.Name);
+          row.classList.add("selected");
+        }
+      });
+    }
+
+    row.addEventListener("click", () => {
+      if (item.IsDir) {
+        if (isSource) {
+          _cloudState.sourcePath = _cloudState.sourcePath ? `${_cloudState.sourcePath}/${item.Name}` : item.Name;
+          const input = _panes["cloudsync"]?.querySelector("#cloud-source-path");
+          if (input) input.value = _cloudState.sourcePath;
+          _loadCloudSourceFiles();
+        } else {
+          _cloudState.destPath = _cloudState.destPath ? `${_cloudState.destPath}/${item.Name}` : item.Name;
+          const input = _panes["cloudsync"]?.querySelector("#cloud-dest-path");
+          if (input) input.value = _cloudState.destPath;
+          _loadCloudDestFiles();
+        }
+      } else if (isSource) {
+        if (_cloudState.sourceSelected.has(item.Name)) {
+          _cloudState.sourceSelected.delete(item.Name);
+          row.classList.remove("selected");
+        } else {
+          _cloudState.sourceSelected.add(item.Name);
+          row.classList.add("selected");
+        }
+      }
+    });
+
+    container.appendChild(row);
+  }
+}
+
+function _renderCloudProgress(status) {
+  const root = _panes["cloudsync"];
+  if (!root) return;
+  const card = root.querySelector("#cloud-job-card");
+  if (!card) return;
+
+  if (status.status === "completed") {
+    // Brief flash of 100% then auto-dismiss
+    const bar = root.querySelector("#cloud-progress-bar");
+    if (bar) bar.style.width = "100%";
+    const stText = root.querySelector("#cloud-job-status-text");
+    if (stText) stText.textContent = "COMPLETED";
+    const logEl = root.querySelector("#cloud-live-log");
+    if (logEl) {
+      logEl.textContent = status.logs?.[status.logs.length - 1] || "✓ Done";
+      logEl.style.color = "var(--accent-color, #a855f7)";
+    }
+    card.style.display = "block";
+    setTimeout(() => {
+      card.style.display = "none";
+      // Uncheck all selected source files
+      _cloudState.sourceSelected.clear();
+      _cloudState.currentJobId = null;
+      root.querySelectorAll(".cloud-item-check").forEach((cb) => {
+        cb.checked = false;
+      });
+      root.querySelectorAll(".cloud-file-row.selected").forEach((row) => {
+        row.classList.remove("selected");
+      });
+    }, 2000);
+    return;
+  }
+
+  card.style.display = "block";
+  const stText = root.querySelector("#cloud-job-status-text");
+  if (stText) stText.textContent = status.status.toUpperCase();
+
+  const bar = root.querySelector("#cloud-progress-bar");
+  if (bar) bar.style.width = `${status.stats.progressPct || 0}%`;
+
+  const trans = root.querySelector("#cloud-stat-transferred");
+  if (trans) trans.textContent = status.stats.transferred || "0 B";
+
+  const tot = root.querySelector("#cloud-stat-total");
+  if (tot) tot.textContent = status.stats.total || "0 B";
+
+  const spd = root.querySelector("#cloud-stat-speed");
+  if (spd) spd.textContent = status.stats.speed || "0 B/s";
+
+  const eta = root.querySelector("#cloud-stat-eta");
+  if (eta) eta.textContent = status.stats.eta || "—";
+
+  const logEl = root.querySelector("#cloud-live-log");
+  if (logEl) {
+    if (status.error) {
+      logEl.textContent = `Error: ${status.error}`;
+      logEl.style.color = "var(--danger-color, #ef4444)";
+    } else if (status.logs && status.logs.length > 0) {
+      logEl.textContent = status.logs[status.logs.length - 1];
+      logEl.style.color = "var(--text-muted)";
+    }
+  }
+}
+
+function _formatCloudBytes(bytes) {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}

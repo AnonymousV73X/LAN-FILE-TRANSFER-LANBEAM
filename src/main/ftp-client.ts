@@ -1,3 +1,12 @@
+
+export function sanitizeWindowsFilename(name: string): string {
+  // Replace invalid Windows characters: <>:"/\|?* and control characters
+  let clean = name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim();
+  // Windows doesn't allow trailing dots or spaces
+  clean = clean.replace(/[. ]+$/, '');
+  return clean || 'unnamed';
+}
+
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -164,7 +173,10 @@ export class SimpleFtpClient {
 
       const target = remotePath || '/';
       if (target !== '/') {
-        await sendCmd(`CWD ${target}`);
+        const cwdRes = await sendCmd(Buffer.concat([Buffer.from('CWD '), Buffer.from(target, 'utf8')]));
+        if (cwdRes.code >= 400) {
+          throw new Error(`FTP CWD failed (${cwdRes.code}): ${cwdRes.text}`);
+        }
       }
 
       const { dataHost, dataPort } = await this.openDataConnection(sendCmd);
@@ -250,8 +262,9 @@ export class SimpleFtpClient {
       await fs.promises.mkdir(path.dirname(localDestPath), { recursive: true });
       const outStream = fs.createWriteStream(localDestPath, { highWaterMark: 1024 * 1024 });
 
+      let dataSocket: net.Socket | null = null;
       const dataPromise = new Promise<void>((resolveData, rejectData) => {
-        const dataSocket = new net.Socket();
+        dataSocket = new net.Socket();
         dataSocket.setNoDelay(true);
         let finished = false;
 
@@ -260,24 +273,29 @@ export class SimpleFtpClient {
           finished = true;
           outStream.end();
           if (err) {
-            dataSocket.destroy();
+            dataSocket?.destroy();
             rejectData(err);
           } else {
             resolveData();
           }
         };
 
+        outStream.on('error', (err) => {
+          console.error('[FTP Download] outStream error:', err);
+          done(err);
+        });
+
         dataSocket.on('connect', () => {
-          dataSocket.setTimeout(0);
+          dataSocket?.setTimeout(0);
         });
 
         dataSocket.on('data', (chunk) => {
           const canWrite = outStream.write(chunk);
           onProgress?.(chunk.length);
           if (!canWrite) {
-            dataSocket.pause();
+            dataSocket?.pause();
             outStream.once('drain', () => {
-              dataSocket.resume();
+              dataSocket?.resume();
             });
           }
         });
@@ -290,8 +308,20 @@ export class SimpleFtpClient {
       });
 
       // Send RETR and handle intermediate 150/125 followed by 226/250 transfer complete
-      const retrStart = await sendCmd(exactRetrCmd);
+      let retrStart: { code: number; text: string };
+      try {
+        retrStart = await sendCmd(exactRetrCmd);
+      } catch (cmdErr) {
+        if (dataSocket) (dataSocket as net.Socket).destroy();
+        outStream.destroy();
+        try { await fs.promises.unlink(localDestPath); } catch (_) {}
+        throw cmdErr;
+      }
+
       if (retrStart.code >= 400) {
+        if (dataSocket) (dataSocket as net.Socket).destroy();
+        outStream.destroy();
+        try { await fs.promises.unlink(localDestPath); } catch (_) {}
         throw new Error(`FTP RETR rejected: ${retrStart.code} ${retrStart.text}`);
       }
       // Disable control socket timeout while bulk transfer is in flight
