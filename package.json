@@ -49,7 +49,7 @@
   "build": {
     "appId": "com.lanbeam.app",
     "productName": "LANBeam",
-    "copyright": "© 2024 LANBeam. All rights reserved.",
+    "copyright": "© 2026 LANBeam. All rights reserved.",
     "publish": {
       "provider": "github",
       "owner": "AnonymousV73X",
