@@ -256,11 +256,40 @@ export class RcloneService {
   }
 
   public async listRemoteFiles(profileId: string, remote: string, subPath: string = ''): Promise<CloudRemoteItem[]> {
+    // LOCAL: bypass rclone entirely, use Node fs directly
+    if (remote === 'LOCAL') {
+      let dir = subPath;
+      if (!dir || dir === '/' || dir === '\\') {
+        dir = app.getPath('downloads');
+      }
+      dir = path.normalize(dir);
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      const items: CloudRemoteItem[] = [];
+      for (const entry of entries) {
+        let size = 0;
+        if (!entry.isDirectory()) {
+          try {
+            const st = await fs.promises.stat(path.join(dir, entry.name));
+            size = st.size;
+          } catch {}
+        }
+        items.push({
+          Path: entry.name,
+          Name: entry.name,
+          Size: size,
+          IsDir: entry.isDirectory(),
+        });
+      }
+      return items.sort((a, b) => {
+        if (a.IsDir !== b.IsDir) return a.IsDir ? -1 : 1;
+        return a.Name.localeCompare(b.Name);
+      });
+    }
+
+    // Cloud remotes: use rclone lsjson
     await this.ensureInstalled();
     const configPath = this.getProfileConfigPath(profileId);
-    const target = remote === 'LOCAL' 
-      ? subPath 
-      : (subPath ? `${remote}:${subPath}` : `${remote}:`);
+    const effectiveTarget = subPath ? `${remote}:${subPath}` : `${remote}:`;
 
     return new Promise((resolve, reject) => {
       const rclone = this.getRcloneBinary();
@@ -269,7 +298,7 @@ export class RcloneService {
         '--fast-list',
         '--no-modtime',
         '--no-mimetype',
-        'lsjson', target
+        'lsjson', effectiveTarget
       ];
       const proc = spawn(rclone, args, { windowsHide: true });
       let stdout = '';
@@ -349,8 +378,12 @@ export class RcloneService {
       const rclone = this.getRcloneBinary();
       const configPath = this.getProfileConfigPath(profile.id);
 
-      let effectiveSource = sourceRemote === 'LOCAL' ? sourceSubPath : `${sourceRemote}:${sourceSubPath}`;
-      let effectiveDest = destRemote === 'LOCAL' ? destSubPath : `${destRemote}:${destSubPath}`;
+      let effectiveSource = sourceRemote === 'LOCAL' 
+        ? path.normalize(sourceSubPath || app.getPath('downloads') || app.getPath('home')) 
+        : `${sourceRemote}:${sourceSubPath}`;
+      let effectiveDest = destRemote === 'LOCAL' 
+        ? path.normalize(destSubPath || app.getPath('downloads') || app.getPath('home')) 
+        : `${destRemote}:${destSubPath}`;
 
       // If reading from PIKKY, spawn local WebDAV bridge to bypass server-side throttling
       if (sourceRemote === 'PIKKY') {
@@ -391,36 +424,48 @@ export class RcloneService {
         'copy', effectiveSource, effectiveDest,
         '--use-json-log',
         '--log-level', 'INFO',
-        '--stats', '1s',
+        '--stats', '300ms',
         '--stats-log-level', 'INFO',
-        '--transfers', '1',
-        '--checkers', '2',
-        '--size-only',
-        '--no-traverse',
-        '--drive-chunk-size', '64M',
-        '--drive-acknowledge-abuse',
+        '--stats-one-line-date=false',
+        '--transfers', '4',
+        '--checkers', '4',
         '--buffer-size', '32M'
       ];
+
+      // Add Drive specific flags only if Google Drive is involved
+      if (sourceRemote === 'GDRIVE' || destRemote === 'GDRIVE') {
+        transferArgs.push('--drive-chunk-size', '64M');
+        transferArgs.push('--drive-acknowledge-abuse');
+      }
 
       // Add file/folder selection filters if specified
       if (selectedItems && selectedItems.length > 0) {
         for (const item of selectedItems) {
+          // Normalize separators, strip leading slash
           const clean = item.replace(/\\/g, '/').replace(/^\/+/, '');
+          // Escape rclone glob special chars: [ ] { } * ? \
+          const escaped = clean.replace(/[\[\]{}*?\\]/g, '\\$&');
           const isFile = /\.[^/]{1,10}$/.test(clean); // has extension → file
           if (isFile) {
-            transferArgs.push('--include', clean);
+            transferArgs.push('--include', escaped);
           } else {
             // folder: include all contents + the folder itself
-            transferArgs.push('--include', `${clean}/**`);
-            transferArgs.push('--include', clean);
+            transferArgs.push('--include', `${escaped}/**`);
+            transferArgs.push('--include', escaped);
           }
         }
         transferArgs.push('--exclude', '*');
       }
 
+      const cmdStr = `${effectiveSource} → ${effectiveDest}`;
+      record.status.logs.push(`[CMD] rclone copy ${cmdStr}`);
+      record.onProgress?.(record.status);
       console.log('[Rclone Transfer] Executing:', rclone, transferArgs.join(' '));
       const proc = spawn(rclone, transferArgs, { windowsHide: true });
       record.process = proc;
+      let peakTotal = 0;
+      let peakTransferred = 0;
+      let smoothedSpeed = 0;
 
       const handleOutput = (chunk: Buffer) => {
         const lines = chunk.toString().split('\n');
@@ -430,41 +475,62 @@ export class RcloneService {
           try {
             const data = JSON.parse(trimmed);
             if (data.stats) {
-              const total = data.stats.totalBytes || 0;
-              const transferred = data.stats.bytes || 0;
-              const speed = data.stats.speed || 0;
+              const rawTotal = data.stats.totalBytes || 0;
+              const rawTransferred = data.stats.bytes || 0;
+              const instantSpeed = data.stats.speed || 0;
               const eta = data.stats.eta;
-              const pct = total > 0 ? Math.floor((transferred * 100) / total) : 0;
+              const transferring = data.stats.transferring || [];
+
+              // rclone data.stats.bytes is ALREADY cumulative total bytes transferred across all files (including active streams).
+              // data.stats.totalBytes is the full expected payload size.
+              const total = rawTotal > peakTotal ? rawTotal : peakTotal;
+              if (rawTotal > peakTotal) peakTotal = rawTotal;
+
+              const transferred = rawTransferred > peakTransferred ? rawTransferred : peakTransferred;
+              if (rawTransferred > peakTransferred) peakTransferred = rawTransferred;
+
+              // Smoothing speed
+              if (instantSpeed > 0) {
+                smoothedSpeed = smoothedSpeed === 0 ? instantSpeed : Math.round(smoothedSpeed * 0.75 + instantSpeed * 0.25);
+              } else if (transferring.length === 0) {
+                smoothedSpeed = 0;
+              }
+
+              // Only scale to 99% when actual file bytes match total and transferring stream is closed
+              const isCommitting = total > 0 && transferred >= total && transferring.length === 0;
+              let pct = 0;
+              if (total > 0) {
+                pct = Math.min(isCommitting ? 99 : 95, Math.floor((transferred * 100) / total));
+              }
 
               record.status.stats = {
                 transferred: this.formatBytes(transferred),
-                total: this.formatBytes(total),
+                total: total > 0 ? this.formatBytes(total) : '—',
                 progressPct: pct,
-                speed: `${this.formatBytes(speed)}/s`,
-                eta: this.formatEta(eta)
+                speed: isCommitting ? '0 B/s' : (smoothedSpeed > 0 ? `${this.formatBytes(smoothedSpeed)}/s` : (instantSpeed > 0 ? `${this.formatBytes(instantSpeed)}/s` : '0 B/s')),
+                eta: isCommitting ? 'Finalizing…' : this.formatEta(eta)
               };
 
               // Show active transferring files
-              const transferring = data.stats.transferring || [];
               let liveMsg = '';
-              if (transferring.length > 0) {
+              if (isCommitting) {
+                liveMsg = 'Committing file to cloud destination…';
+              } else if (transferring.length > 0) {
                 liveMsg = transferring.map((cur: any) => {
                   const fname = cur.name ? cur.name.split('/').pop() : cur.name || '?';
-                  const pct2 = cur.size > 0 ? Math.min(100, Math.round((cur.bytes / cur.size) * 100)) : 0;
+                  const pct2 = cur.size > 0 ? Math.min(99, Math.round((cur.bytes / cur.size) * 100)) : 0;
                   return `↑ ${fname} (${pct2}%)`;
                 }).join('  ·  ');
-              } else if (pct >= 100 && total > 0) {
-                liveMsg = 'Verifying with destination...';
               } else if (total === 0) {
-                liveMsg = 'Scanning files...';
+                liveMsg = 'Scanning files…';
               } else {
-                liveMsg = `Moving to next file... (${this.formatBytes(transferred)} / ${this.formatBytes(total)})`;
+                liveMsg = `Uploading… (${this.formatBytes(transferred)} / ${this.formatBytes(total)})`;
               }
 
               if (liveMsg) {
                 // Overwrite the last log entry if it's a live-status line, else push
                 const last = record.status.logs[record.status.logs.length - 1] || '';
-                const isLive = last.startsWith('↑ ') || last.startsWith('Scanning') || last.startsWith('Verifying') || last.startsWith('Moving') || last.startsWith('Committing');
+                const isLive = last.startsWith('↑ ') || last.startsWith('Scanning') || last.startsWith('Uploading') || last.startsWith('Verifying') || last.startsWith('Moving') || last.startsWith('Committing');
                 if (isLive) {
                   record.status.logs[record.status.logs.length - 1] = liveMsg;
                 } else {
@@ -495,10 +561,15 @@ export class RcloneService {
         if (code === 0) {
           record.status.status = 'completed';
           record.status.stats.progressPct = 100;
-          record.status.logs.push('✓ All files delivered to destination');
+          record.status.stats.speed = '0 B/s';
+          record.status.stats.eta = '0s';
+          const xferred = record.status.stats.transferred;
+          const tot = record.status.stats.total;
+          record.status.logs.push(`✓ Transfer complete (${xferred} of ${tot})`);
         } else if (record.status.status !== 'stopped') {
           record.status.status = 'failed';
-          record.status.error = `Process exited with error code ${code}`;
+          const lastErr = record.status.logs.filter((l: string) => l.startsWith('[error]') || l.startsWith('[warning]')).pop();
+          record.status.error = lastErr || `rclone exited with code ${code}`;
         }
         record.onProgress?.(record.status);
       });

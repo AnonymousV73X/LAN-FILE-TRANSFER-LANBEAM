@@ -538,6 +538,84 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle('explorer:scan-ftp', async () => {
+    // Quick port probe against known phone candidates and ARP table
+    const net = await import('net');
+    const { exec } = await import('child_process');
+    const candidates = new Set<string>();
+
+    // 1. Check paired devices and existing FTP store
+    if (store) {
+      for (const d of store.pairedDevices) {
+        if (d.ip && d.ip !== '127.0.0.1' && !d.ip.startsWith('169.254.')) {
+          candidates.add(d.ip);
+        }
+      }
+      for (const ftp of store.ftpDevices) {
+        if (ftp.host) candidates.add(ftp.host);
+      }
+    }
+
+    // 2. Fast query of ARP table for local network neighbors
+    await new Promise<void>((resolve) => {
+      exec('arp -a', { timeout: 1200 }, (_err, stdout) => {
+        if (stdout) {
+          const matches = stdout.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+          for (const ip of matches) {
+            if (!ip.startsWith('224.') && !ip.startsWith('255.') && !ip.startsWith('127.') && !ip.endsWith('.255') && !ip.endsWith('.1')) {
+              candidates.add(ip);
+            }
+          }
+        }
+        resolve();
+      });
+    });
+
+    const commonPorts = [2121, 21, 2222];
+    const probes: Promise<{ found: boolean; device?: any }>[] = [];
+
+    for (const host of candidates) {
+      for (const port of commonPorts) {
+        probes.push(new Promise((resolve) => {
+          const s = new net.Socket();
+          let settled = false;
+          s.setTimeout(300);
+          const finish = (open: boolean) => {
+            if (settled) return;
+            settled = true;
+            try { s.destroy(); } catch {}
+            if (open) {
+              const id = 'ftp-' + host.replace(/[^a-zA-Z0-9]/g, '_') + '-' + port;
+              const name = `Phone Storage (${host})`;
+              const device = { id, name, host, port, addedAt: Date.now() };
+              explorerService.registerFtpDevice(id, name, device);
+              store?.addFtpDevice(device);
+              mainWindow?.webContents.send('explorer:devices-updated');
+              resolve({ found: true, device });
+            } else {
+              resolve({ found: false });
+            }
+          };
+          s.once('connect', () => finish(true));
+          s.once('timeout', () => finish(false));
+          s.once('error', () => finish(false));
+          try {
+            s.connect(port, host);
+          } catch {
+            finish(false);
+          }
+        }));
+      }
+    }
+
+    if (probes.length > 0) {
+      const results = await Promise.all(probes);
+      const hit = results.find(r => r.found);
+      if (hit) return hit;
+    }
+    return { found: false };
+  });
+
   ipcMain.handle('explorer:remove-ftp', async (_e, id: string) => {
     try {
       store?.removeFtpDevice(id);
@@ -549,6 +627,29 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle('explorer:check-conflicts', async (_e, opts: {
+    sourceDeviceId: string;
+    targetDeviceId: string;
+    targetDir: string;
+    items: Array<{ name: string; path: string; size?: number; isDirectory: boolean }>;
+  }) => {
+    try {
+      let safeTargetDir = opts.targetDir;
+      if (process.platform === 'win32' && /^[A-Z]:\\?$/i.test(safeTargetDir.trim())) {
+        safeTargetDir = currentDownloadDir();
+      }
+      const conflicts = await explorerService.checkConflicts(
+        opts.sourceDeviceId,
+        opts.targetDeviceId,
+        safeTargetDir,
+        opts.items
+      );
+      return { ok: true, conflicts };
+    } catch (err: any) {
+      return { ok: false, error: err.message, conflicts: [] };
+    }
+  });
+
   ipcMain.handle('explorer:transfer', async (_e, opts: {
     transferId?: string;
     sourcePath: string;
@@ -556,11 +657,25 @@ function registerIpc() {
     sourceDeviceId: string;
     targetDeviceId: string;
     totalBytes?: number;
+    conflictAction?: 'overwrite' | 'skip' | 'rename' | 'merge';
+    targetFileName?: string;
+    absentFilesOnly?: string[];
   }) => {
     console.log('[IPC explorer:transfer] requested:', opts);
+    if (opts.conflictAction === 'skip') {
+      return { ok: true, skipped: true };
+    }
+
     const tid = opts.transferId || ('ftp-xfer-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
-    const fileName = opts.sourcePath.split(/[\\/]/).filter(Boolean).pop() || 'item';
-    const filePath = path.join(opts.targetDir, fileName);
+    const rawFileName = opts.sourcePath.split(/[\\/]/).filter(Boolean).pop() || 'item';
+    const fileName = opts.targetFileName || rawFileName;
+    let safeTargetDir = opts.targetDir;
+    // On Windows, writing directly to drive root like C:\ fails with EPERM for non-elevated apps.
+    // Fall back to LANBeam downloads folder if target is a root directory without write permissions.
+    if (process.platform === 'win32' && /^[A-Z]:\\?$/i.test(safeTargetDir.trim())) {
+      safeTargetDir = currentDownloadDir();
+    }
+    const filePath = path.join(safeTargetDir, fileName);
 
     // Resolve human-readable peer device name
     let peerName = 'Phone Storage';
@@ -627,17 +742,49 @@ function registerIpc() {
     try {
       // 1. FTP -> PC
       if (opts.sourceDeviceId.startsWith('ftp-') && !opts.targetDeviceId.startsWith('ftp-')) {
-        const dlRes = await explorerService.downloadFtpItem(opts.sourceDeviceId, opts.sourcePath, opts.targetDir, emitProgress);
+        const dlRes = await explorerService.downloadFtpItem(
+          opts.sourceDeviceId,
+          opts.sourcePath,
+          safeTargetDir,
+          emitProgress,
+          {
+            targetFileName: opts.targetFileName,
+            absentFilesOnly: opts.absentFilesOnly,
+            conflictAction: opts.conflictAction,
+          }
+        );
         if (dlRes?.skippedFiles?.length) skippedInfo = dlRes.skippedFiles;
       }
       // 2. PC -> FTP
       else if (!opts.sourceDeviceId.startsWith('ftp-') && opts.targetDeviceId.startsWith('ftp-')) {
-        await explorerService.uploadToFtp(opts.targetDeviceId, opts.sourcePath, opts.targetDir, emitProgress);
+        await explorerService.uploadToFtp(
+          opts.targetDeviceId,
+          opts.sourcePath,
+          opts.targetDir,
+          emitProgress,
+          {
+            targetFileName: opts.targetFileName,
+            absentFilesOnly: opts.absentFilesOnly,
+            conflictAction: opts.conflictAction,
+          }
+        );
       }
       // 3. PC -> PC local copy
       else if (!opts.sourceDeviceId.startsWith('ftp-') && !opts.targetDeviceId.startsWith('ftp-')) {
-        const dest = path.join(opts.targetDir, fileName);
-        await fs.cp(opts.sourcePath, dest, { recursive: true });
+        const dest = path.join(safeTargetDir, fileName);
+        const srcStat = await fs.stat(opts.sourcePath);
+        if (srcStat.isDirectory() && opts.conflictAction === 'merge' && opts.absentFilesOnly && opts.absentFilesOnly.length > 0) {
+          await fs.mkdir(dest, { recursive: true });
+          const absentSet = new Set(opts.absentFilesOnly.map(f => f.toLowerCase()));
+          const entries = await fs.readdir(opts.sourcePath, { withFileTypes: true });
+          for (const ent of entries) {
+            if (absentSet.has(ent.name.toLowerCase())) {
+              await fs.cp(path.join(opts.sourcePath, ent.name), path.join(dest, ent.name), { recursive: true });
+            }
+          }
+        } else {
+          await fs.cp(opts.sourcePath, dest, { recursive: true });
+        }
       }
 
       const durationMs = Math.max(50, Date.now() - startTime);
@@ -662,6 +809,25 @@ function registerIpc() {
         status: 'complete' as const,
         skippedFiles: skippedInfo,
       };
+
+      // Save to store history
+      if (store) {
+        store.addHistory({
+          id: tid,
+          fileName,
+          fileSize: finalTotal,
+          direction,
+          peerName,
+          filePath,
+          startedAt: startTime,
+          completedAt: Date.now(),
+          durationMs,
+          averageThroughputMbps: avgMbps,
+          integrityOk: true,
+          chunkRetries: 0,
+          status: 'complete',
+        });
+      }
 
       mainWindow?.webContents.send('transfer:event', {
         type: direction === 'in' ? 'inbound:complete' : 'outbound:complete',
@@ -757,6 +923,17 @@ function registerIpc() {
   ipcMain.handle('cloud:cancel-transfer', async (_e, jobId) => {
     rcloneService.cancelTransfer(jobId);
     return true;
+  });
+
+  ipcMain.handle('cloud:get-app-path', (_e, name: string) => app.getPath(name as any));
+
+  ipcMain.handle('cloud:pick-local-dir', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Select Local Folder',
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return result.filePaths[0];
   });
 
 

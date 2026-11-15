@@ -81,21 +81,14 @@
               <polyline points="9 22 9 12 15 12 15 22"/>
             </svg>
           </button>
-                    <button class="nav-item" data-view="explorer" aria-label="Explorer" data-tip="Explorer">
+          <button class="nav-item" data-view="explorer" aria-label="Explorer" data-tip="Explorer">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
-          <button class="nav-item" data-view="history" id="nav-history-btn" style="display:none" aria-label="History">
+          <button class="nav-item" data-view="cloudsync" aria-label="Cloud Sync" data-tip="Cloud Sync (PikPak / GDrive)">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <polyline points="12 6 12 12 16 14"/>
-            </svg>
-          </button>
-          <button class="nav-item" data-view="settings" aria-label="Settings" data-tip="Settings">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
             </svg>
           </button>
           <button class="nav-item" data-view="devices" aria-label="Devices" data-tip="Devices">
@@ -105,15 +98,22 @@
               <line x1="12" y1="17" x2="12" y2="21"/>
             </svg>
           </button>
+          <button class="nav-item" data-view="history" id="nav-history-btn" style="display:none" aria-label="History" data-tip="History">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </button>
           <button class="nav-item" data-view="speedtest" aria-label="Speed Test" data-tip="Speed Test">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M18.54 19.79a9.25 9.25 0 1 0-13.08 0"></path>
               <path d="m12 13.25 4-4"></path>
             </svg>
           </button>
-          <button class="nav-item" data-view="cloudsync" aria-label="Cloud Sync" data-tip="Cloud Sync (PikPak / GDrive)">
+          <button class="nav-item" data-view="settings" aria-label="Settings" data-tip="Settings">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
           </button>
         </div>
@@ -136,6 +136,9 @@
       <div class="explorer-header">
         <div class="explorer-devices-tabs" id="explorer-devices-bar">
           <!-- Dynamic storage device tabs -->
+        </div>
+        <div class="explorer-quick-bar" id="explorer-quick-bar">
+          <!-- Learned / quick access routes -->
         </div>
         <div class="explorer-breadcrumbs-bar">
           <button id="explorer-up-btn" class="explorer-btn-icon" data-tip="Up Directory">
@@ -198,6 +201,7 @@
               </button>
             </div>
           </div>
+          <div class="explorer-split-quick-bar" id="explorer-left-quick-bar"></div>
           <div class="explorer-pane-path-bar" id="explorer-left-path-bar"></div>
           <div class="explorer-pane-search">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -246,6 +250,7 @@
               </button>
             </div>
           </div>
+          <div class="explorer-split-quick-bar" id="explorer-right-quick-bar"></div>
           <div class="explorer-pane-path-bar" id="explorer-right-path-bar"></div>
           <div class="explorer-pane-search">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -493,6 +498,10 @@
         <button class="swatch" data-color="#F59E0B" style="background:#F59E0B"></button>
         <button class="swatch" data-color="#EC4899" style="background:#EC4899"></button>
         <button class="swatch" data-color="#10B981" style="background:#10B981"></button>
+        <label class="custom-color-picker-label" title="Pick any color from gradient / spectrum">
+          <input type="color" id="settings-custom-color" value="#00E5FF" class="custom-color-picker-input" />
+          <span class="custom-color-swatch-disc" id="settings-custom-swatch"></span>
+        </label>
       </div>
       <h3 class="page-subtitle">Benchmark</h3>
       <button class="bench-btn" id="bench-run">Run benchmark</button>
@@ -533,9 +542,10 @@
             </div>
           </div>
           <div class="cloud-path-bar">
-            <button class="cloud-btn-icon" id="cloud-source-up"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>
+            <button class="cloud-btn-icon" id="cloud-source-up" data-tip="Up directory"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>
             <input type="text" class="cloud-path-input" id="cloud-source-path" value="" placeholder="/" />
-            <button class="cloud-btn-icon" id="cloud-source-refresh"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
+            <button class="cloud-btn-icon" id="cloud-source-pick-dir" data-tip="Choose local directory" style="display:none;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+            <button class="cloud-btn-icon" id="cloud-source-refresh" data-tip="Refresh files"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
           </div>
           <div class="cloud-file-list" id="cloud-source-files">
             <div class="cloud-empty">Select or load files...</div>
@@ -571,9 +581,10 @@
             </div>
           </div>
           <div class="cloud-path-bar">
-            <button class="cloud-btn-icon" id="cloud-dest-up"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>
+            <button class="cloud-btn-icon" id="cloud-dest-up" data-tip="Up directory"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>
             <input type="text" class="cloud-path-input" id="cloud-dest-path" value="" placeholder="/" />
-            <button class="cloud-btn-icon" id="cloud-dest-refresh"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
+            <button class="cloud-btn-icon" id="cloud-dest-pick-dir" data-tip="Choose local directory" style="display:none;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+            <button class="cloud-btn-icon" id="cloud-dest-refresh" data-tip="Refresh files"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg></button>
           </div>
           <div class="cloud-file-list" id="cloud-dest-files">
             <div class="cloud-empty">Select destination path...</div>
