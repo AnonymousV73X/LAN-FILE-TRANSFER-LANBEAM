@@ -1,31 +1,161 @@
 const explorerState = {
   devices: [],
-  currentDeviceId: null,
+  currentDeviceId: localStorage.getItem("lanbeam:explorer:currentDeviceId") || null,
   currentPath: "",
   items: [],
   historyStack: [],
   searchScope: "folder",
   searchDebounceTimer: null,
   selectedPaths: new Set(),
-  devicePaths: {}, // last visited path per deviceId
-  isSplitView: false,
+  devicePaths: (() => {
+    try {
+      return JSON.parse(localStorage.getItem("lanbeam:explorer:devicePaths") || "{}");
+    } catch {
+      return {};
+    }
+  })(),
+  learnedRoots: (() => {
+    try {
+      return JSON.parse(localStorage.getItem("lanbeam:explorer:learnedRoots") || "{}");
+    } catch {
+      return {};
+    }
+  })(),
+  isSplitView: localStorage.getItem("lanbeam:explorer:isSplitView") === "true",
   splitLeft: {
-    deviceId: null,
-    currentPath: "",
+    deviceId: localStorage.getItem("lanbeam:explorer:splitLeft:deviceId") || null,
+    currentPath: localStorage.getItem("lanbeam:explorer:splitLeft:path") || "",
     items: [],
     historyStack: [],
     selectedPaths: new Set(),
     searchQuery: "",
   },
   splitRight: {
-    deviceId: null,
-    currentPath: "",
+    deviceId: localStorage.getItem("lanbeam:explorer:splitRight:deviceId") || null,
+    currentPath: localStorage.getItem("lanbeam:explorer:splitRight:path") || "",
     items: [],
     historyStack: [],
     selectedPaths: new Set(),
     searchQuery: "",
   },
 };
+
+function saveExplorerPersistence() {
+  try {
+    if (explorerState.currentDeviceId) {
+      localStorage.setItem("lanbeam:explorer:currentDeviceId", explorerState.currentDeviceId);
+    }
+    localStorage.setItem("lanbeam:explorer:devicePaths", JSON.stringify(explorerState.devicePaths));
+    localStorage.setItem("lanbeam:explorer:learnedRoots", JSON.stringify(explorerState.learnedRoots));
+    localStorage.setItem("lanbeam:explorer:isSplitView", explorerState.isSplitView ? "true" : "false");
+    if (explorerState.splitLeft.deviceId) {
+      localStorage.setItem("lanbeam:explorer:splitLeft:deviceId", explorerState.splitLeft.deviceId);
+      localStorage.setItem("lanbeam:explorer:splitLeft:path", explorerState.splitLeft.currentPath || "");
+    }
+    if (explorerState.splitRight.deviceId) {
+      localStorage.setItem("lanbeam:explorer:splitRight:deviceId", explorerState.splitRight.deviceId);
+      localStorage.setItem("lanbeam:explorer:splitRight:path", explorerState.splitRight.currentPath || "");
+    }
+  } catch {}
+}
+
+function recordLearnedRoute(deviceId, path) {
+  if (!deviceId || !path || path === "/" || path === "\\" || path.length < 3) return;
+  try {
+    if (!explorerState.learnedRoots) explorerState.learnedRoots = {};
+    if (!explorerState.learnedRoots[deviceId]) explorerState.learnedRoots[deviceId] = {};
+    const count = (explorerState.learnedRoots[deviceId][path] || 0) + 1;
+    explorerState.learnedRoots[deviceId][path] = count;
+    saveExplorerPersistence();
+    renderExplorerQuickAccessBar();
+  } catch {}
+}
+
+function getExplorerQuickShortcuts(devId) {
+  const isFtp = devId && devId.startsWith("ftp-");
+  const defaultDir = state.settings?.downloadDir || "";
+  const shortcuts = [];
+
+  if (!isFtp) {
+    if (defaultDir) {
+      shortcuts.push({ name: "LANBeam", path: defaultDir, icon: "📁" });
+    }
+    shortcuts.push({ name: "Downloads", path: "Downloads", icon: "⬇️" });
+    shortcuts.push({ name: "Documents", path: "Documents", icon: "📄" });
+  } else {
+    shortcuts.push({ name: "DCIM", path: "/DCIM/Camera", icon: "📷" });
+    shortcuts.push({ name: "Download", path: "/Download", icon: "⬇️" });
+    shortcuts.push({ name: "Pictures", path: "/Pictures", icon: "🖼️" });
+    shortcuts.push({ name: "Music", path: "/Music", icon: "🎵" });
+  }
+
+  // Add top learned routes from history for this device
+  const learnedMap = explorerState.learnedRoots?.[devId] || {};
+  const learnedSorted = Object.entries(learnedMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([p]) => {
+      const parts = p.split(/[\\/]/).filter(Boolean);
+      const name = parts[parts.length - 1] || p;
+      return { name, path: p, icon: "⭐" };
+    });
+
+  for (const lr of learnedSorted) {
+    if (!shortcuts.some(s => s.path === lr.path)) {
+      shortcuts.push(lr);
+    }
+  }
+  return shortcuts;
+}
+
+function renderExplorerQuickAccessBar() {
+  const bar = document.getElementById("explorer-quick-bar");
+  if (!bar) return;
+  const devId = explorerState.currentDeviceId;
+  const shortcuts = getExplorerQuickShortcuts(devId);
+
+  bar.innerHTML = "";
+  const label = document.createElement("span");
+  label.className = "explorer-quick-label";
+  label.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Quick:`;
+  bar.appendChild(label);
+
+  shortcuts.forEach((sc) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "explorer-quick-chip";
+    chip.innerHTML = `<span>${sc.icon}</span> <span>${escapeHtml(sc.name)}</span>`;
+    chip.addEventListener("click", () => {
+      loadExplorerDirectory(devId, sc.path);
+    });
+    bar.appendChild(chip);
+  });
+}
+
+function renderSplitPaneQuickAccessBar(side) {
+  const bar = document.getElementById(`explorer-${side}-quick-bar`);
+  if (!bar) return;
+  const paneState = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+  const devId = paneState.deviceId;
+  if (!devId) {
+    bar.innerHTML = "";
+    return;
+  }
+  const shortcuts = getExplorerQuickShortcuts(devId);
+
+  bar.innerHTML = "";
+  shortcuts.forEach((sc) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "explorer-split-quick-chip";
+    chip.innerHTML = `<span>${sc.icon}</span> <span>${escapeHtml(sc.name)}</span>`;
+    chip.addEventListener("click", () => {
+      paneState.historyStack.push(paneState.currentPath);
+      loadSplitPaneDirectory(side, devId, sc.path);
+    });
+    bar.appendChild(chip);
+  });
+}
 function initCustomDropdown(id, onChange) {
   const root = document.getElementById(id);
   if (!root) return;
@@ -52,6 +182,20 @@ function initCustomDropdown(id, onChange) {
       root.classList.remove("open");
       onChange?.(val);
     });
+  });
+}
+
+function setCustomDropdown(id, val) {
+  const root = document.getElementById(id);
+  if (!root) return;
+  const selectedLabel = root.querySelector(".dropdown-selected");
+  const items = root.querySelectorAll(".dropdown-item");
+  items.forEach((item) => {
+    if (item.dataset.value === val) {
+      root.dataset.value = val;
+      if (selectedLabel) selectedLabel.textContent = item.textContent.trim();
+      items.forEach((it) => it.classList.toggle("selected", it === item));
+    }
   });
 }
 
@@ -581,6 +725,80 @@ function dedupeDevices(list) {
   return [...best.values()];
 }
 
+let _lastFtpScanTime = 0;
+let _detectedFtpDevice = null;
+
+async function checkAndAutoScanFtpOnHome(host) {
+  if (state.view !== "home") return;
+  // If we don't have explorerState devices populated yet, fetch them first
+  if (!explorerState.devices || explorerState.devices.length === 0) {
+    try {
+      const devs = await window.lanbeam.explorer?.getDevices?.();
+      if (devs) explorerState.devices = devs;
+    } catch {}
+  }
+
+  const registeredFtp = explorerState.devices?.find(d => d.id?.startsWith("ftp-"));
+  if (registeredFtp) {
+    _detectedFtpDevice = registeredFtp;
+    renderDetectedFtpBanner(host);
+    return;
+  }
+
+  // Rate limit autoscan to once every 10s
+  const now = Date.now();
+  if (now - _lastFtpScanTime < 10000) {
+    if (_detectedFtpDevice) renderDetectedFtpBanner(host);
+    return;
+  }
+  _lastFtpScanTime = now;
+
+  try {
+    const res = await window.lanbeam.explorer?.scanFtp?.();
+    if (res && res.found && res.device) {
+      _detectedFtpDevice = res.device;
+      if (!explorerState.devices.some(d => d.id === res.device.id)) {
+        explorerState.devices.push(res.device);
+      }
+      renderDetectedFtpBanner(host);
+    }
+  } catch (e) {
+    console.debug("[Home FTP AutoScan] scan error:", e);
+  }
+}
+
+function renderDetectedFtpBanner(host) {
+  if (!host || !_detectedFtpDevice) return;
+  const devName = _detectedFtpDevice.name || "Phone Storage";
+  const devHost = _detectedFtpDevice.host ? `FTP · ${_detectedFtpDevice.host}` : "FTP Storage";
+
+  host.innerHTML = `
+    <div class="device-card clickable home-ftp-device-card" id="home-ftp-open-btn" role="button" tabindex="0" aria-label="Open FTP Explorer for ${escapeHtml(devName)}">
+      <div class="device-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+      </div>
+      <div class="device-info">
+        <div class="device-top">
+          <span class="device-name">${escapeHtml(devName)}</span>
+          <span class="device-badge online">FTP Live</span>
+        </div>
+        <div class="device-sub">${escapeHtml(devHost)} · Click to open Explorer</div>
+      </div>
+      <div class="device-chevron">${chevronIcon}</div>
+    </div>
+  `;
+
+  host.querySelector("#home-ftp-open-btn")?.addEventListener("click", () => {
+    explorerState.currentDeviceId = _detectedFtpDevice.id;
+    renderView("explorer");
+    selectExplorerDevice(_detectedFtpDevice.id, `ftp://${_detectedFtpDevice.id}/`);
+  });
+}
+
 function renderDevices() {
   const host = document.getElementById("device-cards");
   if (!host) return;
@@ -595,7 +813,12 @@ function renderDevices() {
     ),
   ).sort((x, y) => (y.lastSeen || 0) - (x.lastSeen || 0));
   if (!activeDevices.length) {
-    host.innerHTML = `<div class="empty-hint">No active devices online. Just quickly scan QR CODE and connect your device (Make sure it's on the same network).</div>`;
+    if (_detectedFtpDevice) {
+      renderDetectedFtpBanner(host);
+    } else {
+      host.innerHTML = `<div class="empty-hint">No active devices online. Just quickly scan QR CODE and connect your device (Make sure it's on the same network).</div>`;
+      checkAndAutoScanFtpOnHome(host);
+    }
   } else {
     host.innerHTML = activeDevices.map((d) => deviceCardHtml(d, true)).join("");
   }
@@ -1673,16 +1896,29 @@ function syncSettingsControls() {
   // Swatch highlight follows the live accent — lives here (not in the
   // one-time binder) so opening the pane after a theme change marks the
   // right swatch without a remount.
+  let isPresetColor = false;
   document.querySelectorAll("#settings-swatches .swatch").forEach((sw) => {
     if (
       state.settings?.accentColor &&
-      sw.dataset.color === state.settings.accentColor
+      sw.dataset.color.toLowerCase() === state.settings.accentColor.toLowerCase()
     ) {
       sw.classList.add("active");
+      isPresetColor = true;
     } else {
       sw.classList.remove("active");
     }
   });
+
+  const customColorInput = document.getElementById("settings-custom-color");
+  const customColorLabel = customColorInput?.closest(".custom-color-picker-label");
+  if (customColorInput) {
+    if (state.settings?.accentColor) {
+      customColorInput.value = state.settings.accentColor;
+    }
+    if (customColorLabel) {
+      customColorLabel.classList.toggle("active", !isPresetColor && !!state.settings?.accentColor);
+    }
+  }
 }
 
 function bindSettings() {
@@ -1781,6 +2017,23 @@ function bindSettings() {
     );
   });
 
+  // Settings custom color picker from gradient
+  const customColorInput = document.getElementById("settings-custom-color");
+  if (customColorInput) {
+    customColorInput.addEventListener("input", (e) => {
+      const col = e.target.value;
+      if (col) {
+        applyAccent(col, settingsSwatches);
+      }
+    });
+    customColorInput.addEventListener("change", (e) => {
+      const col = e.target.value;
+      if (col) {
+        applyAccent(col, settingsSwatches);
+      }
+    });
+  }
+
   // Benchmark
   const benchRun = document.getElementById("bench-run");
   const benchResults = document.getElementById("bench-results");
@@ -1827,9 +2080,16 @@ function applyAccent(color, swatchEls) {
     a: color,
     r: rgb ? `${rgb.r}, ${rgb.g}, ${rgb.b}` : null,
   });
-  (swatchEls || []).forEach((sw) =>
-    sw.classList.toggle("active", sw.dataset.color === color),
-  );
+  let matchedPreset = false;
+  (swatchEls || []).forEach((sw) => {
+    const isMatch = sw.dataset.color.toLowerCase() === color.toLowerCase();
+    sw.classList.toggle("active", isMatch);
+    if (isMatch) matchedPreset = true;
+  });
+  const customColorInput = document.getElementById("settings-custom-color");
+  const customColorLabel = customColorInput?.closest(".custom-color-picker-label");
+  if (customColorInput) customColorInput.value = color;
+  if (customColorLabel) customColorLabel.classList.toggle("active", !matchedPreset);
   window.lanbeam?.settings?.update?.({ accentColor: color });
   // The QR magnifier cursor is a data-URI SVG — CSS data URIs cannot read
   // var(--accent-color), so it is rebuilt here on every accent change.
@@ -2893,6 +3153,14 @@ async function boot() {
   // Render home immediately so UI is never blank on launch
   renderView("home");
 
+  // Pre-load explorer devices right at boot so FTP/drives are known immediately
+  window.lanbeam.explorer?.getDevices?.().then((devs) => {
+    if (devs) {
+      explorerState.devices = devs;
+      if (state.view === "home") renderDevices();
+    }
+  }).catch(() => {});
+
   // Network switched (new Wi-Fi / IP): update the URL and radio info live.
   window.lanbeam.network?.onChanged?.((d) => {
     state.ipUrl = d.ipUrl || "";
@@ -3065,9 +3333,105 @@ async function boot() {
   setInterval(() => {
     if (!document.hidden) refreshWifi();
   }, 30000);
+
+  initGlobalKeyboardShortcuts();
 }
 
 boot().catch((err) => console.error("renderer boot failed:", err));
+
+// ─── Global Keyboard Shortcuts ────────────────────────────────────────────────
+function initGlobalKeyboardShortcuts() {
+  document.addEventListener("keydown", (e) => {
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    const inText = tag === "input" || tag === "textarea" || document.activeElement?.isContentEditable;
+
+    // ── Type-to-filter: printable char while in explorer (single view) ─────────
+    if (
+      state.view === "explorer" &&
+      !explorerState.isSplitView &&
+      !inText &&
+      !e.ctrlKey && !e.metaKey && !e.altKey &&
+      e.key.length === 1 // printable character
+    ) {
+      const searchInput = document.getElementById("explorer-search-input");
+      if (searchInput) {
+        searchInput.focus();
+        // Let the keydown bubble naturally so the char lands in the input
+        // We only need to ensure it's focused; the browser will insert it.
+        return;
+      }
+    }
+
+    // Ctrl+A / Cmd+A — select all in the active list
+    if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+      if (inText) return; // let native select-all work in text fields
+
+      e.preventDefault();
+
+      if (state.view === "explorer") {
+        if (explorerState.isSplitView) {
+          // Select all only in the pane the mouse last entered
+          const activeSide = document._lassoActiveSplitSide || "left";
+          const paneState = activeSide === "left" ? explorerState.splitLeft : explorerState.splitRight;
+          paneState.items.forEach((it) => paneState.selectedPaths.add(it.path));
+          const listEl = document.getElementById(`explorer-${activeSide}-list`);
+          if (listEl) {
+            listEl.querySelectorAll(".explorer-row").forEach((r) => {
+              r.classList.add("selected");
+              r.querySelector(".explorer-row-checkbox")?.setAttribute("data-tip", "Selected");
+            });
+          }
+        } else {
+          // Single pane
+          explorerState.items.forEach((it) => explorerState.selectedPaths.add(it.path));
+          updateExplorerSelectionUI();
+        }
+      } else if (state.view === "cloudsync") {
+        // Select all source files
+        (_cloudState.sourceFiles || []).forEach((f) => _cloudState.sourceSelected.add(f.Name));
+        const root = _panes["cloudsync"];
+        if (root) {
+          root.querySelectorAll("#cloud-source-files .cloud-file-row").forEach((r) => r.classList.add("selected"));
+        }
+      }
+    }
+
+    // Escape — deselect all in the active list / blur search input
+    if (e.key === "Escape") {
+      // If search input is focused, clear it and return to list
+      const searchInput = document.getElementById("explorer-search-input");
+      if (searchInput && document.activeElement === searchInput) {
+        searchInput.value = "";
+        searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+        searchInput.blur();
+        return;
+      }
+      if (state.view === "explorer") {
+        if (explorerState.isSplitView) {
+          ["left", "right"].forEach((side) => {
+            const paneState = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+            paneState.selectedPaths.clear();
+            const listEl = document.getElementById(`explorer-${side}-list`);
+            if (!listEl) return;
+            listEl.querySelectorAll(".explorer-row").forEach((r) => {
+              r.classList.remove("selected");
+              r.querySelector(".explorer-row-checkbox")?.setAttribute("data-tip", "Select");
+            });
+          });
+        } else {
+          explorerState.selectedPaths.clear();
+          updateExplorerSelectionUI();
+        }
+      } else if (state.view === "cloudsync") {
+        _cloudState.sourceSelected.clear();
+        const root = _panes["cloudsync"];
+        if (root) {
+          root.querySelectorAll("#cloud-source-files .cloud-file-row").forEach((r) => r.classList.remove("selected"));
+        }
+      }
+    }
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // OTA Update Banner — fires when main process detects a newer release.
@@ -3258,13 +3622,49 @@ function bindExplorer() {
     toggleExplorerSplitView();
   });
 
+  if (explorerState.isSplitView) {
+    applyExplorerSplitView(true);
+  }
+
   initExplorerSplitControls();
 
   loadExplorerDevices();
 }
 
+function applyExplorerSplitView(isSplit) {
+  const splitBtn = document.getElementById("explorer-split-btn");
+  const singleBody = document.getElementById("explorer-single-body");
+  const splitContainer = document.getElementById("explorer-split-container");
+  const devBar = document.getElementById("explorer-devices-bar");
+  const quickBar = document.getElementById("explorer-quick-bar");
+  const breadcrumbs = document.getElementById("explorer-breadcrumbs");
+  const upBtn = document.getElementById("explorer-up-btn");
+  const searchBox = document.querySelector(".explorer-search-box");
+
+  if (isSplit) {
+    splitBtn?.classList.add("active");
+    if (singleBody) singleBody.style.display = "none";
+    if (splitContainer) splitContainer.style.display = "grid";
+    if (devBar) devBar.style.display = "none";
+    if (quickBar) quickBar.style.display = "none";
+    if (breadcrumbs) breadcrumbs.style.display = "none";
+    if (upBtn) upBtn.style.display = "none";
+    if (searchBox) searchBox.style.display = "none";
+    setupExplorerSplitDefaults();
+  } else {
+    splitBtn?.classList.remove("active");
+    if (singleBody) singleBody.style.display = "flex";
+    if (splitContainer) splitContainer.style.display = "none";
+    if (devBar) devBar.style.display = "flex";
+    if (quickBar) quickBar.style.display = "flex";
+    if (breadcrumbs) breadcrumbs.style.display = "flex";
+    if (upBtn) upBtn.style.display = "inline-flex";
+    if (searchBox) searchBox.style.display = "flex";
+  }
+}
+
 function refreshExplorer() {
-  console.log("[Explorer] refreshExplorer called");
+  console.log("[Explorer] refreshExplorer called", { currentDeviceId: explorerState.currentDeviceId, currentPath: explorerState.currentPath });
   if (explorerState.currentDeviceId && explorerState.currentPath) {
     loadExplorerDirectory(
       explorerState.currentDeviceId,
@@ -3276,6 +3676,7 @@ function refreshExplorer() {
 }
 
 async function loadExplorerDevices() {
+  console.log("[Explorer] loadExplorerDevices called");
   // show skeleton tabs
   const bar0 = document.getElementById("explorer-devices-bar");
   if (bar0 && !bar0.querySelector(".explorer-device-tab")) {
@@ -3292,8 +3693,15 @@ async function loadExplorerDevices() {
     explorerState.devices = devices || [];
     renderExplorerDevicesBar();
     updateExplorerSplitSelects();
-    if (!explorerState.currentDeviceId && devices.length > 0) {
-      selectExplorerDevice(devices[0].id, devices[0].rootPath);
+    if (devices && devices.length > 0) {
+      const activeDevExists = explorerState.currentDeviceId && devices.some(d => d.id === explorerState.currentDeviceId);
+      if (!activeDevExists) {
+        selectExplorerDevice(devices[0].id, devices[0].rootPath);
+      } else {
+        const activeDev = devices.find(d => d.id === explorerState.currentDeviceId);
+        const targetPath = explorerState.devicePaths[activeDev.id] || activeDev.rootPath || "";
+        loadExplorerDirectory(activeDev.id, targetPath);
+      }
     }
   } catch (err) {
     console.error("[Explorer] Failed to load devices:", err);
@@ -3565,6 +3973,8 @@ async function loadExplorerDirectory(deviceId, path) {
     explorerState.currentPath = res.currentPath;
     explorerState.items = res.items;
     explorerState.devicePaths[deviceId] = res.currentPath; // remember for next switch
+    saveExplorerPersistence();
+    recordLearnedRoute(deviceId, res.currentPath);
 
     const sInput = document.getElementById("explorer-search-input");
     const cBtn = document.getElementById("explorer-search-clear-btn");
@@ -3574,6 +3984,7 @@ async function loadExplorerDirectory(deviceId, path) {
     }
 
     renderExplorerBreadcrumbs(res.currentPath);
+    renderExplorerQuickAccessBar();
     renderExplorerList(res.items);
   } catch (err) {
     console.error("[Explorer] listDirectory failed:", err);
@@ -4232,108 +4643,184 @@ function updateExplorerSelectionUI() {
   }
 }
 
-function initExplorerLasso() {
-  const listEl = document.getElementById("explorer-list");
-  if (!listEl || listEl._lassoInitialized) return;
-  listEl._lassoInitialized = true;
+function attachGenericLasso({
+  container,
+  targetContainer,
+  rowSelector,
+  getItemKey,
+  selectedSet,
+  onSelectionChanged,
+}) {
+  if (!container) return;
+  // If already attached to this container, do not re-add mousedown listeners
+  if (container._lassoAttached) return;
+  container._lassoAttached = true;
+
+  const targetEl = targetContainer || container;
 
   let isSelecting = false;
-  let startX = 0;
-  let startY = 0;
   let lassoBox = null;
+  let scrollInterval = null;
+  let lastClientY = 0;
+  let startClientX = 0;
+  let startClientY = 0;
+  let initialSelectedAtDragStart = new Set();
+  let hasMoved = false;
 
-  listEl.addEventListener("mousedown", (e) => {
-    // Only left click outside row action buttons & checkboxes
-    if (e.button !== 0) return;
-    if (e.target.closest(".explorer-row-action-btn") || e.target.closest(".explorer-row-checkbox")) return;
+  // Suppress native drag-and-drop while lasso is in progress
+  const blockDrag = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
 
-    // If not holding Ctrl/Shift and clicking empty area, clear previous selection
-    if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.target.closest(".explorer-row")) {
-      explorerState.selectedPaths.clear();
-      updateExplorerSelectionUI();
+  const autoScroll = () => {
+    if (!isSelecting) return;
+    const rect = targetEl.getBoundingClientRect();
+    const zone = 40, speed = 18;
+    if (lastClientY < rect.top + zone)
+      targetEl.scrollTop -= Math.min(1, (rect.top + zone - lastClientY) / zone) * speed;
+    else if (lastClientY > rect.bottom - zone)
+      targetEl.scrollTop += Math.min(1, (lastClientY - (rect.bottom - zone)) / zone) * speed;
+  };
+
+  const onMouseMove = (mv) => {
+    lastClientY = mv.clientY;
+    const dx = mv.clientX - startClientX;
+    const dy = mv.clientY - startClientY;
+
+    if (!hasMoved && Math.hypot(dx, dy) > 4) {
+      hasMoved = true;
+      isSelecting = true;
+      document._lassoDragging = true;
+
+      // Disarm all rows from native HTML5 drag immediately so lasso wins
+      targetEl.querySelectorAll(rowSelector).forEach(r => {
+        r.draggable = false;
+        r.removeAttribute("draggable");
+      });
+
+      // Block native DnD so our lasso wins
+      window.addEventListener("dragstart", blockDrag, true);
+
+      lassoBox = document.createElement("div");
+      lassoBox.className = "explorer-lasso-box";
+      lassoBox.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;border:1px solid var(--accent-color);background:rgba(var(--accent-rgb, 0, 194, 168), 0.18);box-shadow:0 0 10px rgba(var(--accent-rgb, 0, 194, 168), 0.25);";
+      document.body.appendChild(lassoBox);
+
+      scrollInterval = setInterval(autoScroll, 16);
     }
 
-    // Start lasso only on background click or if dragging
-    const isRow = e.target.closest(".explorer-row");
-    const rect = listEl.getBoundingClientRect();
-    startX = e.clientX - rect.left + listEl.scrollLeft;
-    startY = e.clientY - rect.top + listEl.scrollTop;
+    if (!isSelecting || !lassoBox) return;
 
-    let hasMoved = false;
+    mv.preventDefault(); // prevent browser text selection while lassoing
 
-    const onMouseMove = (moveEv) => {
-      const curX = moveEv.clientX - rect.left + listEl.scrollLeft;
-      const curY = moveEv.clientY - rect.top + listEl.scrollTop;
-      const dx = curX - startX;
-      const dy = curY - startY;
+    const left   = Math.min(startClientX, mv.clientX);
+    const top    = Math.min(startClientY, mv.clientY);
+    const width  = Math.abs(dx);
+    const height = Math.abs(dy);
 
-      if (!hasMoved && Math.hypot(dx, dy) > 5) {
-        hasMoved = true;
-        isSelecting = true;
-        if (!lassoBox) {
-          lassoBox = document.createElement("div");
-          lassoBox.className = "explorer-lasso-box";
-          listEl.appendChild(lassoBox);
-        }
+    lassoBox.style.left   = left + "px";
+    lassoBox.style.top    = top + "px";
+    lassoBox.style.width  = width + "px";
+    lassoBox.style.height = height + "px";
+
+    const lasso = { left, top, right: left + width, bottom: top + height };
+
+    targetEl.querySelectorAll(rowSelector).forEach((r) => {
+      const rr = r.getBoundingClientRect();
+      const hit = !(rr.left > lasso.right || rr.right < lasso.left ||
+                    rr.top  > lasso.bottom || rr.bottom < lasso.top);
+      const key = getItemKey(r);
+      if (!key) return;
+
+      if (mv.ctrlKey || mv.metaKey) {
+        if (hit) initialSelectedAtDragStart.has(key) ? selectedSet.delete(key) : selectedSet.add(key);
+        else     initialSelectedAtDragStart.has(key) ? selectedSet.add(key)    : selectedSet.delete(key);
+      } else {
+        if (hit) selectedSet.add(key);
+        else if (!initialSelectedAtDragStart.has(key)) selectedSet.delete(key);
       }
+    });
 
-      if (isSelecting && lassoBox) {
-        const left = Math.min(startX, curX);
-        const top = Math.min(startY, curY);
-        const width = Math.abs(dx);
-        const height = Math.abs(dy);
+    onSelectionChanged();
+  };
 
-        lassoBox.style.left = left + "px";
-        lassoBox.style.top = top + "px";
-        lassoBox.style.width = width + "px";
-        lassoBox.style.height = height + "px";
+  const onMouseUp = () => {
+    window.removeEventListener("mousemove", onMouseMove);
+    window.removeEventListener("mouseup", onMouseUp);
+    window.removeEventListener("dragstart", blockDrag, true);
 
-        // Check intersections with rows
-        const lBoxRect = {
-          left: left,
-          top: top,
-          right: left + width,
-          bottom: top + height,
-        };
+    if (scrollInterval) {
+      clearInterval(scrollInterval);
+      scrollInterval = null;
+    }
+    if (lassoBox) {
+      lassoBox.remove();
+      lassoBox = null;
+    }
 
-        const rows = listEl.querySelectorAll(".explorer-row");
-        rows.forEach((r) => {
-          const rTop = r.offsetTop;
-          const rBottom = rTop + r.offsetHeight;
-          const rLeft = r.offsetLeft;
-          const rRight = rLeft + r.offsetWidth;
+    if (isSelecting) {
+      // Prevent subsequent row click event from firing after lasso release
+      const captureClickPrevent = (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        window.removeEventListener("click", captureClickPrevent, true);
+      };
+      window.addEventListener("click", captureClickPrevent, true);
+    }
 
-          const intersects = !(
-            rLeft > lBoxRect.right ||
-            rRight < lBoxRect.left ||
-            rTop > lBoxRect.bottom ||
-            rBottom < lBoxRect.top
-          );
+    isSelecting = false;
+    hasMoved = false;
+    document._lassoDragging = false;
+  };
 
-          const itemPath = r.getAttribute("data-item-path");
-          if (intersects) {
-            explorerState.selectedPaths.add(itemPath);
-          } else if (!moveEv.ctrlKey && !moveEv.metaKey) {
-            // Unselect if not dragging with Ctrl
-            explorerState.selectedPaths.delete(itemPath);
-          }
-        });
-        updateExplorerSelectionUI();
-      }
-    };
+  container.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    // Don't start lasso if clicking directly on buttons, inputs, links, or the checkbox itself
+    if (e.target.closest(".explorer-row-action-btn, button, input, a, .dropdown-trigger, .dropdown-menu, .path-crumb")) return;
+    if (e.target.closest(".explorer-row-checkbox, .cloud-item-check")) return;
 
-    const onMouseUp = () => {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      if (lassoBox) {
-        lassoBox.remove();
-        lassoBox = null;
-      }
-      isSelecting = false;
-    };
+    // If mousedown starts on a row's filename/icon (the draggable area) without Ctrl/Shift,
+    // this is a file click / drag-and-drop intent, NOT a lasso start!
+    const clickedRow = e.target.closest(rowSelector);
+    const clickedColCheck = e.target.closest(".col-check");
+    if (clickedRow && !clickedColCheck && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      // Allow native HTML5 drag-and-drop or row click to proceed normally
+      return;
+    }
+
+    const isCtrl = e.ctrlKey || e.metaKey;
+    const isShift = e.shiftKey;
+
+    // If clicking outside rows on empty space without Ctrl/Shift, clear selection
+    if (!isCtrl && !isShift && !clickedRow) {
+      selectedSet.clear();
+      onSelectionChanged();
+    }
+
+    initialSelectedAtDragStart = new Set(selectedSet);
+    startClientX = e.clientX;
+    startClientY = e.clientY;
+    lastClientY = e.clientY;
+    hasMoved = false;
+    document._lassoDragging = false;
 
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
+  });
+}
+
+function initExplorerLasso() {
+  const listEl = document.getElementById("explorer-list");
+  const singleBody = document.getElementById("explorer-single-body") || listEl;
+  if (!listEl) return;
+  attachGenericLasso({
+    container: singleBody,
+    targetContainer: listEl,
+    rowSelector: ".explorer-row",
+    getItemKey: (r) => r.getAttribute("data-item-path"),
+    selectedSet: explorerState.selectedPaths,
+    onSelectionChanged: () => updateExplorerSelectionUI(),
   });
 }
 
@@ -4407,6 +4894,15 @@ function renderExplorerList(items) {
       showTransferTargetModal(item, explorerState.currentDeviceId);
     });
 
+    // Double-click always navigates folder even if selection is active
+    row.addEventListener("dblclick", (e) => {
+      if (item.isDirectory) {
+        e.stopPropagation();
+        explorerState.historyStack.push(explorerState.currentPath);
+        loadExplorerDirectory(explorerState.currentDeviceId, item.path);
+      }
+    });
+
     row.addEventListener("click", (e) => {
       e.stopPropagation();
 
@@ -4455,7 +4951,9 @@ function renderExplorerList(items) {
         return;
       }
 
-      // Normal click with no selection active
+      // Normal click with no selection active:
+      // Clicking filename of a directory navigates directory.
+      // Clicking filename of a file goes directly to the destination choice modal without unnecessary selection step.
       lastClickedIndex = index;
       if (item.isDirectory) {
         if (e.altKey) {
@@ -4685,33 +5183,8 @@ function showBatchTransferTargetModal(items, sourceDeviceId) {
 
 function toggleExplorerSplitView() {
   explorerState.isSplitView = !explorerState.isSplitView;
-  const splitBtn = document.getElementById("explorer-split-btn");
-  const singleBody = document.getElementById("explorer-single-body");
-  const splitContainer = document.getElementById("explorer-split-container");
-  const devBar = document.getElementById("explorer-devices-bar");
-  const breadcrumbs = document.getElementById("explorer-breadcrumbs");
-  const upBtn = document.getElementById("explorer-up-btn");
-  const searchBox = document.querySelector(".explorer-search-box");
-
-  if (explorerState.isSplitView) {
-    splitBtn?.classList.add("active");
-    if (singleBody) singleBody.style.display = "none";
-    if (splitContainer) splitContainer.style.display = "grid";
-    if (devBar) devBar.style.display = "none";
-    if (breadcrumbs) breadcrumbs.style.display = "none";
-    if (upBtn) upBtn.style.display = "none";
-    if (searchBox) searchBox.style.display = "none";
-
-    setupExplorerSplitDefaults();
-  } else {
-    splitBtn?.classList.remove("active");
-    if (singleBody) singleBody.style.display = "flex";
-    if (splitContainer) splitContainer.style.display = "none";
-    if (devBar) devBar.style.display = "flex";
-    if (breadcrumbs) breadcrumbs.style.display = "flex";
-    if (upBtn) upBtn.style.display = "inline-flex";
-    if (searchBox) searchBox.style.display = "flex";
-  }
+  saveExplorerPersistence();
+  applyExplorerSplitView(explorerState.isSplitView);
 }
 
 function updateExplorerSplitSelects() {
@@ -4862,6 +5335,36 @@ function initExplorerSplitControls() {
   setupSplitPaneDragDrop("left");
   setupSplitPaneDragDrop("right");
 
+  // Attach outer card lasso so user can drag from outside the card / padding / header into rows!
+  ["left", "right"].forEach(side => {
+    const paneEl = document.getElementById(`explorer-pane-${side}`);
+    const listEl = document.getElementById(`explorer-${side}-list`);
+    const paneState = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+    if (paneEl && listEl) {
+      attachGenericLasso({
+        container: paneEl,
+        targetContainer: listEl,
+        rowSelector: ".explorer-row",
+        getItemKey: (r) => r.getAttribute("data-item-path"),
+        selectedSet: paneState.selectedPaths,
+        onSelectionChanged: () => {
+          const rows = listEl.querySelectorAll(".explorer-row");
+          rows.forEach((r) => {
+            const p = r.getAttribute("data-item-path");
+            const cb = r.querySelector(".explorer-row-checkbox");
+            if (paneState.selectedPaths.has(p)) {
+              r.classList.add("selected");
+              cb?.setAttribute("data-tip", "Selected");
+            } else {
+              r.classList.remove("selected");
+              cb?.setAttribute("data-tip", "Select");
+            }
+          });
+        },
+      });
+    }
+  });
+
   // Search / filter
   ["left", "right"].forEach(side => {
     const input = document.getElementById(`explorer-${side}-search`);
@@ -4910,13 +5413,16 @@ async function loadSplitPaneDirectory(side, deviceId, dirPath) {
     paneState.currentPath = res.currentPath;
     paneState.items = res.items || [];
     explorerState.devicePaths[deviceId] = res.currentPath;
+    saveExplorerPersistence();
+    recordLearnedRoute(deviceId, res.currentPath);
 
     if (pathBar) {
       const fullPath = res.currentPath || "/";
       const isFtp = deviceId && deviceId.startsWith("ftp-");
       const sep = isFtp ? "/" : (fullPath.includes("\\") ? "\\" : "/");
-      // For Windows: parts = ["C:", "Users", "user"] — skip [0] since it's the drive root crumb
-      const allParts = fullPath.replace(/[/\\]+$/, "").split(/[/\\]/).filter(Boolean);
+      // Clean up FTP path: strip any leading ftp://<devId> prefix
+      const cleanPath = isFtp ? fullPath.replace(/^ftp:\/\/[^/]+/, '') || '/' : fullPath;
+      const allParts = cleanPath.replace(/[/\\]+$/, "").split(/[/\\]/).filter(Boolean);
       const drivePart = !isFtp && allParts.length ? allParts[0] : null; // e.g. "C:"
       const parts = isFtp ? allParts : allParts.slice(1); // skip drive from segment list
 
@@ -4924,8 +5430,8 @@ async function loadSplitPaneDirectory(side, deviceId, dirPath) {
 
       // Root crumb
       const rootCrumb = document.createElement("span");
-      rootCrumb.className = "path-crumb";
-      rootCrumb.textContent = isFtp ? "/" : (drivePart || sep);
+      rootCrumb.className = "path-crumb" + (parts.length === 0 ? " active" : "");
+      rootCrumb.textContent = isFtp ? "Phone Storage" : (drivePart || sep);
       const rootTarget = isFtp ? "/" : (drivePart ? drivePart + sep : sep);
       rootCrumb.addEventListener("click", () => {
         paneState.historyStack.push(paneState.currentPath);
@@ -4936,12 +5442,10 @@ async function loadSplitPaneDirectory(side, deviceId, dirPath) {
       // Segment crumbs
       parts.forEach((part, idx) => {
         const isLast = idx === parts.length - 1;
-        if (!isFtp || idx > 0) {
-          const sepEl = document.createElement("span");
-          sepEl.className = "path-crumb-sep";
-          sepEl.textContent = isFtp ? "/" : "\\";
-          pathBar.appendChild(sepEl);
-        }
+        const sepEl = document.createElement("span");
+        sepEl.className = "path-crumb-sep";
+        sepEl.textContent = isFtp ? "/" : "\\";
+        pathBar.appendChild(sepEl);
 
         const crumb = document.createElement("span");
         crumb.className = "path-crumb" + (isLast ? " active" : "");
@@ -4964,6 +5468,7 @@ async function loadSplitPaneDirectory(side, deviceId, dirPath) {
     const searchInput = document.getElementById(`explorer-${side}-search`);
     if (searchInput) searchInput.value = "";
 
+    renderSplitPaneQuickAccessBar(side);
     renderSplitPaneList(side);
   } catch (err) {
     if (listEl) {
@@ -4996,6 +5501,12 @@ function renderSplitPaneList(side) {
   if (!listEl) return;
   listEl.innerHTML = "";
 
+  // Track which pane is active for Ctrl+A — attach only once per element
+  if (!listEl._splitSideTracked) {
+    listEl._splitSideTracked = true;
+    listEl.addEventListener("mouseenter", () => { document._lassoActiveSplitSide = side; });
+  }
+
   const items = paneState.items;
   if (!items || items.length === 0) {
     listEl.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px;">Empty folder</div>';
@@ -5010,11 +5521,14 @@ function renderSplitPaneList(side) {
     return;
   }
 
-  filtered.forEach((item) => {
+  let lastClickedIndex = -1;
+
+  filtered.forEach((item, index) => {
     const row = document.createElement("div");
     row.className = "explorer-row";
-    row.draggable = true;
+    row.draggable = false; // NOT draggable by default — set dynamically on drag intent only
     row.setAttribute("data-item-path", item.path);
+    row.setAttribute("data-item-index", index);
 
     const isSelected = paneState.selectedPaths.has(item.path);
     if (isSelected) row.classList.add("selected");
@@ -5032,13 +5546,38 @@ function renderSplitPaneList(side) {
       <span class="col-size" style="width: 70px; font-size: 11px;">${sizeText}</span>
     `;
 
-    // Click: folders navigate in, files toggle selection
-    row.addEventListener("click", (e) => {
-      if (e.target.closest(".explorer-row-checkbox")) return; // handled below
+    // Double-click always navigates folder regardless of selection state
+    row.addEventListener("dblclick", (e) => {
       if (item.isDirectory) {
+        e.stopPropagation();
         paneState.historyStack.push(paneState.currentPath);
         loadSplitPaneDirectory(side, paneState.deviceId, item.path);
+      }
+    });
+
+    // Checkbox: toggle selection dynamically
+    const cb = row.querySelector(".explorer-row-checkbox");
+    cb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (paneState.selectedPaths.has(item.path)) {
+        paneState.selectedPaths.delete(item.path);
+        row.classList.remove("selected");
+        cb.setAttribute("data-tip", "Select");
       } else {
+        paneState.selectedPaths.add(item.path);
+        row.classList.add("selected");
+        cb.setAttribute("data-tip", "Selected");
+      }
+      lastClickedIndex = index;
+    });
+
+    // Row click: supports Ctrl+click, Shift+click, dynamic toggle when selected, and normal click
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".explorer-row-checkbox")) return;
+      document._lassoActiveSplitSide = side; // mark this pane as active for Ctrl+A
+
+      // Ctrl+click / Cmd+click: toggle individual selection
+      if (e.ctrlKey || e.metaKey) {
         if (paneState.selectedPaths.has(item.path)) {
           paneState.selectedPaths.delete(item.path);
           row.classList.remove("selected");
@@ -5046,27 +5585,85 @@ function renderSplitPaneList(side) {
           paneState.selectedPaths.add(item.path);
           row.classList.add("selected");
         }
+        lastClickedIndex = index;
+        return;
       }
-    });
 
-    // Checkbox: always toggle selection regardless of type
-    const cb = row.querySelector(".explorer-row-checkbox");
-    cb.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (paneState.selectedPaths.has(item.path)) {
-        paneState.selectedPaths.delete(item.path);
-        row.classList.remove("selected");
+      // Shift+click: range selection
+      if (e.shiftKey && lastClickedIndex >= 0) {
+        const start = Math.min(lastClickedIndex, index);
+        const end = Math.max(lastClickedIndex, index);
+        const rows = listEl.querySelectorAll(".explorer-row");
+        for (let i = start; i <= end; i++) {
+          const r = rows[i];
+          const p = r?.getAttribute("data-item-path");
+          if (p) {
+            paneState.selectedPaths.add(p);
+            r.classList.add("selected");
+          }
+        }
+        return;
+      }
+
+      // Dynamic selection mode: if items are already selected, clicking toggles selection
+      if (paneState.selectedPaths.size > 0) {
+        if (paneState.selectedPaths.has(item.path)) {
+          paneState.selectedPaths.delete(item.path);
+          row.classList.remove("selected");
+        } else {
+          paneState.selectedPaths.add(item.path);
+          row.classList.add("selected");
+        }
+        lastClickedIndex = index;
+        return;
+      }
+
+      // Normal single click (no selection active):
+      lastClickedIndex = index;
+      if (item.isDirectory) {
+        paneState.historyStack.push(paneState.currentPath);
+        loadSplitPaneDirectory(side, paneState.deviceId, item.path);
       } else {
+        // Dynamic select file
         paneState.selectedPaths.add(item.path);
         row.classList.add("selected");
       }
     });
 
+    // Enable native drag only when user grabs the row name/icon area (never on checkbox column or margins)
+    row.addEventListener("mousedown", (e) => {
+      if (!e.target.closest(".col-check, .explorer-row-checkbox")) {
+        row.draggable = true;
+      } else {
+        row.draggable = false;
+      }
+    });
+    row.addEventListener("dragend", () => { row.draggable = false; });
+    // Also suppress dragstart if the container's lasso blockDrag is active (window capture handles it)
+
     // Drag start
     row.addEventListener("dragstart", (e) => {
+      // If user is doing lasso selection or started from non-draggable zone, cancel drag
+      if (!row.draggable) {
+        e.preventDefault();
+        return;
+      }
+      // If native drag is suppressed by lasso threshold, block it
+      if (document._lassoDragging) {
+        e.preventDefault();
+        return;
+      }
       const draggedItems = paneState.selectedPaths.has(item.path)
         ? items.filter(it => paneState.selectedPaths.has(it.path))
         : [item];
+
+      // Custom native-like drag ghost badge
+      const dragBadge = document.createElement("div");
+      dragBadge.style.cssText = "position:absolute;top:-1000px;left:-1000px;padding:6px 12px;background:#181920;border:1px solid rgba(var(--accent-rgb),0.5);border-radius:8px;color:#fff;font-size:12px;display:flex;align-items:center;gap:6px;box-shadow:0 8px 24px rgba(0,0,0,0.6);font-family:var(--font-sans);pointer-events:none;";
+      dragBadge.innerHTML = `<span style="font-size:14px;">${draggedItems.length > 1 ? "📁" : (item.isDirectory ? "📁" : "📄")}</span><span>${draggedItems.length > 1 ? `${draggedItems.length} items` : escapeHtml(item.name)}</span>`;
+      document.body.appendChild(dragBadge);
+      e.dataTransfer.setDragImage(dragBadge, 15, 15);
+      setTimeout(() => dragBadge.remove(), 0);
 
       e.dataTransfer.setData("application/json", JSON.stringify({
         sourceSide: side,
@@ -5078,6 +5675,27 @@ function renderSplitPaneList(side) {
 
     listEl.appendChild(row);
   });
+
+  attachGenericLasso({
+    container: listEl,
+    rowSelector: ".explorer-row",
+    getItemKey: (r) => r.getAttribute("data-item-path"),
+    selectedSet: paneState.selectedPaths,
+    onSelectionChanged: () => {
+      const rows = listEl.querySelectorAll(".explorer-row");
+      rows.forEach((r) => {
+        const p = r.getAttribute("data-item-path");
+        const cb = r.querySelector(".explorer-row-checkbox");
+        if (paneState.selectedPaths.has(p)) {
+          r.classList.add("selected");
+          cb?.setAttribute("data-tip", "Selected");
+        } else {
+          r.classList.remove("selected");
+          cb?.setAttribute("data-tip", "Select");
+        }
+      });
+    },
+  });
 }
 
 function setupSplitPaneDragDrop(side) {
@@ -5088,17 +5706,45 @@ function setupSplitPaneDragDrop(side) {
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
     paneEl.classList.add("drag-over");
+
+    // Dynamic File-Explorer style drop indicator on folder rows
+    const row = e.target.closest(".explorer-row");
+    paneEl.querySelectorAll(".explorer-row.drop-target").forEach(r => {
+      if (r !== row) r.classList.remove("drop-target");
+    });
+    if (row) {
+      const path = row.getAttribute("data-item-path");
+      const targetPane = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+      const it = targetPane.items.find(i => i.path === path);
+      if (it && it.isDirectory) {
+        row.classList.add("drop-target");
+      }
+    }
   });
 
   paneEl.addEventListener("dragleave", (e) => {
     if (!paneEl.contains(e.relatedTarget)) {
       paneEl.classList.remove("drag-over");
+      paneEl.querySelectorAll(".explorer-row.drop-target").forEach(r => r.classList.remove("drop-target"));
     }
   });
 
   paneEl.addEventListener("drop", async (e) => {
     e.preventDefault();
     paneEl.classList.remove("drag-over");
+
+    // Check if dropped directly onto a specific subdirectory in this pane
+    const droppedOnRow = e.target.closest(".explorer-row");
+    let targetFolderSubpath = null;
+    if (droppedOnRow) {
+      const rowPath = droppedOnRow.getAttribute("data-item-path");
+      const targetPane = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
+      const targetItem = targetPane.items.find(i => i.path === rowPath);
+      if (targetItem && targetItem.isDirectory) {
+        targetFolderSubpath = targetItem.path;
+      }
+    }
+    paneEl.querySelectorAll(".explorer-row.drop-target").forEach(r => r.classList.remove("drop-target"));
 
     try {
       const dataStr = e.dataTransfer.getData("application/json");
@@ -5110,7 +5756,7 @@ function setupSplitPaneDragDrop(side) {
       }
 
       const targetPane = side === "left" ? explorerState.splitLeft : explorerState.splitRight;
-      const targetDir = targetPane.currentPath || (targetPane.deviceId?.startsWith("ftp-") ? "/" : "C:\\");
+      const targetDir = targetFolderSubpath || targetPane.currentPath || (targetPane.deviceId?.startsWith("ftp-") ? "/" : "C:\\");
 
       await runSplitTransferBatch(data.items, data.sourceDeviceId, targetPane.deviceId, targetDir, side);
     } catch (err) {
@@ -5134,22 +5780,234 @@ async function executeSplitTransfer(fromSide, toSide) {
   await runSplitTransferBatch(selectedItems, fromPane.deviceId, toPane.deviceId, targetDir, toSide);
 }
 
+// ── Conflict resolution modal ──────────────────────────────────────────
+function promptTransferConflict(conflicts, totalItemsCount) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById("conflict-resolution-modal");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "conflict-resolution-modal";
+    overlay.className = "conflict-modal-overlay";
+
+    const hasFolderConflict = conflicts.some(c => c.isDirectory);
+    const hasAbsentFiles = conflicts.some(c => c.hasAbsentFiles);
+
+    const itemsSummaryHtml = conflicts.slice(0, 5).map(c => {
+      let badge = '<span class="conflict-badge warning">Exists</span>';
+      if (c.isDirectory && c.hasAbsentFiles) {
+        badge = `<span class="conflict-badge info">${c.absentFileCount} absent item(s)</span>`;
+      }
+      return `
+        <div class="conflict-item-row">
+          <span class="conflict-item-name" title="${escapeHtml(c.name)}">${c.isDirectory ? "📁 " : "📄 "}${escapeHtml(c.name)}</span>
+          ${badge}
+        </div>
+      `;
+    }).join("");
+
+    const extraCount = conflicts.length > 5 ? `<div style="text-align:center;font-size:11.5px;color:var(--text-muted);margin-top:4px;">...and ${conflicts.length - 5} other item(s)</div>` : "";
+
+    overlay.innerHTML = `
+      <div class="conflict-modal-card">
+        <div class="conflict-modal-header">
+          <div class="conflict-modal-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+          </div>
+          <div>
+            <div class="conflict-modal-title">File Conflict Warning</div>
+            <div class="conflict-modal-subtitle">${conflicts.length} destination item(s) already exist</div>
+          </div>
+        </div>
+        <div class="conflict-modal-body">
+          <div style="margin-bottom: 12px;">
+            LANBeam protects your destination from being accidentally deleted or overwritten. How would you like to handle existing items?
+          </div>
+          ${itemsSummaryHtml}
+          ${extraCount}
+        </div>
+        <div class="conflict-actions-stack">
+          ${hasFolderConflict && hasAbsentFiles ? `
+            <button class="conflict-btn btn-primary" id="conflict-action-merge">
+              <span><strong>Merge Folders</strong> (Send absent files only)</span>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          ` : ""}
+          <button class="conflict-btn" id="conflict-action-rename">
+            <span><strong>Keep Both</strong> (Auto-rename incoming items)</span>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="conflict-btn" id="conflict-action-skip">
+            <span><strong>Skip Existing</strong> (Transfer non-conflicting only)</span>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="conflict-btn" id="conflict-action-overwrite" style="color: var(--danger-color, #ef4444); border-color: rgba(239, 68, 68, 0.3);">
+            <span><strong>Overwrite</strong> (Replace destination files)</span>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="conflict-btn btn-cancel" id="conflict-action-cancel">Cancel Transfer</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const cleanup = (choice) => {
+      overlay.remove();
+      resolve(choice);
+    };
+
+    overlay.querySelector("#conflict-action-merge")?.addEventListener("click", () => cleanup("merge"));
+    overlay.querySelector("#conflict-action-rename")?.addEventListener("click", () => cleanup("rename"));
+    overlay.querySelector("#conflict-action-skip")?.addEventListener("click", () => cleanup("skip"));
+    overlay.querySelector("#conflict-action-overwrite")?.addEventListener("click", () => cleanup("overwrite"));
+    overlay.querySelector("#conflict-action-cancel")?.addEventListener("click", () => cleanup(null));
+  });
+}
+
+// ── Live row refill helper in split destination pane ───────────────────
+function injectLiveTransferRow(destSide, item, effectiveName, targetDir) {
+  const destPane = destSide === "left" ? explorerState.splitLeft : explorerState.splitRight;
+  const listEl = document.getElementById(`explorer-${destSide}-list`);
+  if (!listEl) return null;
+
+  // Only inject live row if user is currently looking at the target directory
+  const currentNorm = (destPane.currentPath || "").replace(/[\\/]+$/, "");
+  const targetNorm = targetDir.replace(/[\\/]+$/, "");
+  if (currentNorm && targetNorm && currentNorm.toLowerCase() !== targetNorm.toLowerCase()) {
+    return null;
+  }
+
+  // Remove placeholder if folder was empty
+  if (listEl.children.length === 1 && listEl.children[0].textContent.includes("Empty folder")) {
+    listEl.innerHTML = "";
+  }
+
+  const row = document.createElement("div");
+  row.className = "explorer-row is-transferring";
+  row.setAttribute("data-live-name", effectiveName.toLowerCase());
+
+  const iconSvg = item.isDirectory
+    ? '<span class="item-icon folder"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>'
+    : '<span class="item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg></span>';
+
+  row.innerHTML = `
+    <span class="col-check"><span style="display:inline-block;width:13px;height:13px;border-radius:50%;background:rgba(var(--accent-rgb),0.3);border:2px solid var(--accent-color, #00d2ff);animation:spin 1s linear infinite;"></span></span>
+    <span class="col-name" style="font-size: 12.5px;">${iconSvg} <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(effectiveName)}</span></span>
+    <span class="col-size" style="width: 160px; min-width: 160px; font-size: 11px; white-space: nowrap;"><span class="live-size-tag">0 B</span></span>
+  `;
+
+  listEl.prepend(row);
+  return row;
+}
+
+function updateLiveTransferRowProgress(row, bytesTransferred, totalBytes) {
+  if (!row) return;
+  const tag = row.querySelector(".live-size-tag");
+  if (!tag) return;
+  if (totalBytes && totalBytes > 0) {
+    tag.textContent = `${formatBytes(bytesTransferred)} / ${formatBytes(totalBytes)}`;
+  } else {
+    tag.textContent = formatBytes(bytesTransferred);
+  }
+}
+
 async function runSplitTransferBatch(items, sourceDeviceId, targetDeviceId, targetDir, destSide) {
   const isOut = !sourceDeviceId.startsWith("ftp-");
+  const sourceDev = explorerState.devices.find(d => d.id === sourceDeviceId);
   const targetDev = explorerState.devices.find(d => d.id === targetDeviceId);
-  const peerName = targetDev?.name || (isOut ? "Phone Storage" : "PC Storage");
+  const fromName = sourceDev?.name || (isOut ? "PC Storage" : "Phone Storage");
+  const toName = targetDev?.name || (isOut ? "Phone Storage" : "PC Storage");
+
+  // Step 1: Pre-flight conflict check (skip for FTP targets — avoids extra FTP connection/listing overhead)
+  let conflicts = [];
+  const targetIsFtp = targetDeviceId?.startsWith("ftp-");
+  if (!targetIsFtp) {
+    try {
+      const res = await window.lanbeam.explorer.checkConflicts({
+        sourceDeviceId,
+        targetDeviceId,
+        targetDir,
+        items: items.map(it => ({
+          name: it.name,
+          path: it.path,
+          size: it.size || 0,
+          isDirectory: it.isDirectory,
+        })),
+      });
+      if (res?.ok && res.conflicts) {
+        conflicts = res.conflicts.filter(c => c.exists);
+      }
+    } catch (err) {
+      console.warn("Pre-flight conflict check failed:", err);
+    }
+  }
+
+  let conflictResolution = "overwrite";
+  if (conflicts.length > 0) {
+    conflictResolution = await promptTransferConflict(conflicts, items.length);
+    if (!conflictResolution) {
+      toast("Transfer cancelled by user.");
+      return;
+    }
+  }
+
+  const conflictMap = new Map(conflicts.map(c => [c.name.toLowerCase(), c]));
+  let completedCount = 0;
 
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
+    const conflict = conflictMap.get(it.name.toLowerCase());
+
+    // Skip handling
+    if (conflict && conflictResolution === "skip") {
+      continue;
+    }
+
+    let effectiveName = it.name;
+    let absentOnly = undefined;
+
+    // Auto-rename
+    if (conflict && conflictResolution === "rename") {
+      const ext = it.isDirectory ? "" : (it.name.includes(".") ? "." + it.name.split(".").pop() : "");
+      const base = it.isDirectory ? it.name : it.name.slice(0, it.name.length - ext.length);
+      effectiveName = `${base} (1)${ext}`;
+    }
+
+    // Merge folder
+    if (conflict && conflictResolution === "merge" && it.isDirectory) {
+      absentOnly = conflict.absentFiles || [];
+      if (absentOnly.length === 0) {
+        // No absent files to copy; already fully synced
+        continue;
+      }
+    }
+
     const tid = "split-xfer-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+    // Live refill row injection in destination split pane
+    const liveRow = injectLiveTransferRow(destSide, it, effectiveName, targetDir);
+
+    // Progress listener for live refill
+    const unbindProgress = window.lanbeam.transfer.onEvent((ev) => {
+      if ((ev.type === "inbound:progress" || ev.type === "outbound:progress") && ev.transferId === tid) {
+        if (ev.progress) {
+          updateLiveTransferRowProgress(liveRow, ev.progress.bytesTransferred, ev.progress.totalBytes);
+        }
+      }
+    });
 
     updateTransferCard(
       {
         fileId: tid,
-        fileName: items.length > 1 ? `[${i + 1}/${items.length}] ${it.name}` : it.name,
+        fileName: items.length > 1 ? `[${i + 1}/${items.length}] ${effectiveName}` : effectiveName,
         totalBytes: it.isDirectory ? 0 : (it.size || 0),
         bytesTransferred: 0,
-        peerName: peerName,
+        peerName: `${fromName} \u2192 ${toName} (${targetDir})`,
         throughputMbps: 0,
         etaMs: 0,
         sparkline: [],
@@ -5165,14 +6023,23 @@ async function runSplitTransferBatch(items, sourceDeviceId, targetDeviceId, targ
         sourceDeviceId: sourceDeviceId,
         targetDeviceId: targetDeviceId,
         totalBytes: it.isDirectory ? 0 : (it.size || 0),
+        conflictAction: conflictResolution,
+        targetFileName: effectiveName,
+        absentFilesOnly: absentOnly,
       });
+      completedCount++;
     } catch (err) {
       console.error("Split transfer failed:", it.name, err);
       failTransferCard(err.message || "Transfer error", tid);
+    } finally {
+      try { unbindProgress(); } catch {}
+      if (liveRow) {
+        liveRow.classList.remove("is-transferring");
+      }
     }
   }
 
-  toast(`Transferred ${items.length} item(s) successfully!`);
+  toast(`Transferred ${completedCount} item(s) successfully!`);
 
   // Clear selections on both panes after transfer
   explorerState.splitLeft.selectedPaths.clear();
@@ -5209,10 +6076,15 @@ async function runSplitTransferBatch(items, sourceDeviceId, targetDeviceId, targ
         tip.classList.add('visible');
       });
     } else {
-      // Top tooltip centered over target
+      // Top tooltip centered over target with viewport clamping
+      const tipWidth = tip.offsetWidth || 120;
       let targetLeft = rect.left + rect.width / 2;
-      tip.style.left = Math.max(10, targetLeft) + 'px';
-      tip.style.top = (rect.top - 32) + 'px';
+      const minLeft = tipWidth / 2 + 12;
+      const maxLeft = window.innerWidth - tipWidth / 2 - 12;
+      const clampedLeft = Math.max(minLeft, Math.min(maxLeft, targetLeft));
+
+      tip.style.left = clampedLeft + 'px';
+      tip.style.top = Math.max(8, rect.top - 32) + 'px';
       tip.style.transform = 'translateX(-50%) translateY(2px)';
       requestAnimationFrame(() => {
         tip.style.transform = 'translateX(-50%) translateY(0)';
@@ -5248,15 +6120,24 @@ async function runSplitTransferBatch(items, sourceDeviceId, targetDeviceId, targ
 // ============================================================================
 let _cloudState = {
   profile: null,
-  sourceRemote: "PIKKY",
-  sourcePath: "",
+  sourceRemote: localStorage.getItem("lanbeam:cloud:sourceRemote") || "PIKKY",
+  sourcePath: localStorage.getItem("lanbeam:cloud:sourcePath") || "",
   sourceFiles: [],
   sourceSelected: new Set(),
-  destRemote: "GDRIVE",
-  destPath: "",
+  destRemote: localStorage.getItem("lanbeam:cloud:destRemote") || "GDRIVE",
+  destPath: localStorage.getItem("lanbeam:cloud:destPath") || "",
   destFiles: [],
   currentJobId: null
 };
+
+function _saveCloudPersistence() {
+  try {
+    localStorage.setItem("lanbeam:cloud:sourceRemote", _cloudState.sourceRemote || "PIKKY");
+    localStorage.setItem("lanbeam:cloud:sourcePath", _cloudState.sourcePath || "");
+    localStorage.setItem("lanbeam:cloud:destRemote", _cloudState.destRemote || "GDRIVE");
+    localStorage.setItem("lanbeam:cloud:destPath", _cloudState.destPath || "");
+  } catch {}
+}
 
 async function bindCloudSync() {
   const root = _panes["cloudsync"];
@@ -5311,21 +6192,49 @@ async function bindCloudSync() {
     refreshCloudSync();
   });
 
+  const updateRemoteUi = () => {
+    const srcPickBtn = root.querySelector("#cloud-source-pick-dir");
+    if (srcPickBtn) srcPickBtn.style.display = _cloudState.sourceRemote === "LOCAL" ? "flex" : "none";
+    const destPickBtn = root.querySelector("#cloud-dest-pick-dir");
+    if (destPickBtn) destPickBtn.style.display = _cloudState.destRemote === "LOCAL" ? "flex" : "none";
+  };
+
   // Source controls
   initCustomDropdown("dropdown-cloud-source-remote", (val) => {
     _cloudState.sourceRemote = val;
     _cloudState.sourcePath = "";
+    _saveCloudPersistence();
+    updateRemoteUi();
     const pathInput = root.querySelector("#cloud-source-path");
     if (pathInput) pathInput.value = "";
     _loadCloudSourceFiles();
+  });
+  setCustomDropdown("dropdown-cloud-source-remote", _cloudState.sourceRemote);
+
+  root.querySelector("#cloud-source-pick-dir")?.addEventListener("click", async () => {
+    const dir = await window.lanbeam.cloud.pickLocalDir();
+    if (dir) {
+      _cloudState.sourcePath = dir;
+      _saveCloudPersistence();
+      const pathInput = root.querySelector("#cloud-source-path");
+      if (pathInput) pathInput.value = dir;
+      _loadCloudSourceFiles();
+    }
   });
 
   root.querySelector("#cloud-source-refresh")?.addEventListener("click", () => _loadCloudSourceFiles());
   root.querySelector("#cloud-source-up")?.addEventListener("click", () => {
     if (!_cloudState.sourcePath) return;
+    const isWindows = _cloudState.sourcePath.includes("\\") || /^[a-zA-Z]:/.test(_cloudState.sourcePath);
+    const sep = isWindows ? "\\" : "/";
     const parts = _cloudState.sourcePath.replace(/\\/g, "/").split("/").filter(Boolean);
     parts.pop();
-    _cloudState.sourcePath = parts.join("/");
+    if (isWindows && parts.length === 1 && /^[a-zA-Z]:$/.test(parts[0])) {
+      _cloudState.sourcePath = parts[0] + "\\";
+    } else {
+      _cloudState.sourcePath = parts.join(sep);
+    }
+    _saveCloudPersistence();
     const input = root.querySelector("#cloud-source-path");
     if (input) input.value = _cloudState.sourcePath;
     _loadCloudSourceFiles();
@@ -5334,6 +6243,7 @@ async function bindCloudSync() {
   root.querySelector("#cloud-source-path")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       _cloudState.sourcePath = e.target.value.trim();
+      _saveCloudPersistence();
       _loadCloudSourceFiles();
     }
   });
@@ -5342,17 +6252,38 @@ async function bindCloudSync() {
   initCustomDropdown("dropdown-cloud-dest-remote", (val) => {
     _cloudState.destRemote = val;
     _cloudState.destPath = "";
+    _saveCloudPersistence();
+    updateRemoteUi();
     const pathInput = root.querySelector("#cloud-dest-path");
     if (pathInput) pathInput.value = "";
     _loadCloudDestFiles();
+  });
+  setCustomDropdown("dropdown-cloud-dest-remote", _cloudState.destRemote);
+
+  root.querySelector("#cloud-dest-pick-dir")?.addEventListener("click", async () => {
+    const dir = await window.lanbeam.cloud.pickLocalDir();
+    if (dir) {
+      _cloudState.destPath = dir;
+      _saveCloudPersistence();
+      const pathInput = root.querySelector("#cloud-dest-path");
+      if (pathInput) pathInput.value = dir;
+      _loadCloudDestFiles();
+    }
   });
 
   root.querySelector("#cloud-dest-refresh")?.addEventListener("click", () => _loadCloudDestFiles());
   root.querySelector("#cloud-dest-up")?.addEventListener("click", () => {
     if (!_cloudState.destPath) return;
+    const isWindows = _cloudState.destPath.includes("\\") || /^[a-zA-Z]:/.test(_cloudState.destPath);
+    const sep = isWindows ? "\\" : "/";
     const parts = _cloudState.destPath.replace(/\\/g, "/").split("/").filter(Boolean);
     parts.pop();
-    _cloudState.destPath = parts.join("/");
+    if (isWindows && parts.length === 1 && /^[a-zA-Z]:$/.test(parts[0])) {
+      _cloudState.destPath = parts[0] + "\\";
+    } else {
+      _cloudState.destPath = parts.join(sep);
+    }
+    _saveCloudPersistence();
     const input = root.querySelector("#cloud-dest-path");
     if (input) input.value = _cloudState.destPath;
     _loadCloudDestFiles();
@@ -5361,9 +6292,12 @@ async function bindCloudSync() {
   root.querySelector("#cloud-dest-path")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       _cloudState.destPath = e.target.value.trim();
+      _saveCloudPersistence();
       _loadCloudDestFiles();
     }
   });
+
+  updateRemoteUi();
 
   // Start Transfer
   root.querySelector("#cloud-start-btn")?.addEventListener("click", async () => {
@@ -5429,6 +6363,20 @@ async function _loadCloudSourceFiles() {
   if (!listEl) return;
   listEl.innerHTML = '<div class="cloud-empty">Fetching directory...</div>';
 
+  // If LOCAL and path isn't absolute, reset to empty so backend defaults to Downloads
+  if (_cloudState.sourceRemote === "LOCAL" && _cloudState.sourcePath && !/^([a-zA-Z]:[\\\/]|\/)/.test(_cloudState.sourcePath)) {
+    _cloudState.sourcePath = "";
+    const inp = root.querySelector("#cloud-source-path");
+    if (inp) inp.value = "";
+  }
+
+  // For LOCAL with no path, resolve Downloads so folder navigation has a full absolute base
+  if (_cloudState.sourceRemote === "LOCAL" && !_cloudState.sourcePath) {
+    _cloudState.sourcePath = await window.lanbeam.cloud.getAppPath("downloads");
+    const inp = root.querySelector("#cloud-source-path");
+    if (inp) inp.value = _cloudState.sourcePath;
+  }
+
   try {
     const items = await window.lanbeam.cloud.listRemoteFiles({
       profileId: _cloudState.profile.id,
@@ -5460,6 +6408,20 @@ async function _loadCloudDestFiles() {
   const listEl = root.querySelector("#cloud-dest-files");
   if (!listEl) return;
   listEl.innerHTML = '<div class="cloud-empty">Fetching directory...</div>';
+
+  // If LOCAL and path isn't absolute, reset to empty so backend defaults to Downloads
+  if (_cloudState.destRemote === "LOCAL" && _cloudState.destPath && !/^([a-zA-Z]:[\\\/]|\/)/.test(_cloudState.destPath)) {
+    _cloudState.destPath = "";
+    const inp = root.querySelector("#cloud-dest-path");
+    if (inp) inp.value = "";
+  }
+
+  // For LOCAL with no path, resolve Downloads so folder navigation has a full absolute base
+  if (_cloudState.destRemote === "LOCAL" && !_cloudState.destPath) {
+    _cloudState.destPath = await window.lanbeam.cloud.getAppPath("downloads");
+    const inp = root.querySelector("#cloud-dest-path");
+    if (inp) inp.value = _cloudState.destPath;
+  }
 
   try {
     const items = await window.lanbeam.cloud.listRemoteFiles({
@@ -5531,12 +6493,22 @@ function _renderCloudFiles(container, items, isSource) {
     row.addEventListener("click", () => {
       if (item.IsDir) {
         if (isSource) {
-          _cloudState.sourcePath = _cloudState.sourcePath ? `${_cloudState.sourcePath}/${item.Name}` : item.Name;
+          const isWindows = _cloudState.sourceRemote === "LOCAL" && (_cloudState.sourcePath.includes("\\") || /^[a-zA-Z]:/.test(_cloudState.sourcePath));
+          const sep = isWindows ? "\\" : "/";
+          _cloudState.sourcePath = _cloudState.sourcePath 
+            ? (_cloudState.sourcePath.endsWith(sep) ? `${_cloudState.sourcePath}${item.Name}` : `${_cloudState.sourcePath}${sep}${item.Name}`)
+            : item.Name;
+          _saveCloudPersistence();
           const input = _panes["cloudsync"]?.querySelector("#cloud-source-path");
           if (input) input.value = _cloudState.sourcePath;
           _loadCloudSourceFiles();
         } else {
-          _cloudState.destPath = _cloudState.destPath ? `${_cloudState.destPath}/${item.Name}` : item.Name;
+          const isWindows = _cloudState.destRemote === "LOCAL" && (_cloudState.destPath.includes("\\") || /^[a-zA-Z]:/.test(_cloudState.destPath));
+          const sep = isWindows ? "\\" : "/";
+          _cloudState.destPath = _cloudState.destPath 
+            ? (_cloudState.destPath.endsWith(sep) ? `${_cloudState.destPath}${item.Name}` : `${_cloudState.destPath}${sep}${item.Name}`)
+            : item.Name;
+          _saveCloudPersistence();
           const input = _panes["cloudsync"]?.querySelector("#cloud-dest-path");
           if (input) input.value = _cloudState.destPath;
           _loadCloudDestFiles();
@@ -5553,6 +6525,30 @@ function _renderCloudFiles(container, items, isSource) {
     });
 
     container.appendChild(row);
+  }
+
+  if (isSource) {
+    attachGenericLasso({
+      container: container,
+      rowSelector: ".cloud-file-row",
+      getItemKey: (r) => {
+        const nameEl = r.querySelector(".cloud-file-name");
+        return nameEl?.getAttribute("data-tip") || nameEl?.textContent || null;
+      },
+      selectedSet: _cloudState.sourceSelected,
+      onSelectionChanged: () => {
+        const rows = container.querySelectorAll(".cloud-file-row");
+        rows.forEach((r) => {
+          const nameEl = r.querySelector(".cloud-file-name");
+          const name = nameEl?.getAttribute("data-tip") || nameEl?.textContent;
+          if (name && _cloudState.sourceSelected.has(name)) {
+            r.classList.add("selected");
+          } else {
+            r.classList.remove("selected");
+          }
+        });
+      },
+    });
   }
 }
 
@@ -5574,6 +6570,10 @@ function _renderCloudProgress(status) {
       logEl.style.color = "var(--accent-color, #a855f7)";
     }
     card.style.display = "block";
+
+    // Auto-refresh destination directory so newly transferred items show up immediately
+    _loadCloudDestFiles();
+
     setTimeout(() => {
       card.style.display = "none";
       // Uncheck all selected source files

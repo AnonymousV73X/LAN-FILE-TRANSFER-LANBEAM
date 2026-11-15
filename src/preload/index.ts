@@ -97,8 +97,23 @@ const api = {
     search: (opts: { scope: 'folder' | 'drive'; targetPath: string; query: string; deviceId?: string }) => ipcRenderer.invoke('explorer:search', opts),
     addFtpDevice: (config: { host: string; port?: number; user?: string; password?: string; name?: string }) => ipcRenderer.invoke('explorer:add-ftp', config),
     removeFtpDevice: (id: string) => ipcRenderer.invoke('explorer:remove-ftp', id),
-    transfer: (opts: { sourcePath: string; targetDir: string; sourceDeviceId: string; targetDeviceId: string; totalBytes?: number }) =>
-      ipcRenderer.invoke('explorer:transfer', opts),
+    scanFtp: () => ipcRenderer.invoke('explorer:scan-ftp'),
+    checkConflicts: (opts: {
+      sourceDeviceId: string;
+      targetDeviceId: string;
+      targetDir: string;
+      items: Array<{ name: string; path: string; size?: number; isDirectory: boolean }>;
+    }) => ipcRenderer.invoke('explorer:check-conflicts', opts),
+    transfer: (opts: {
+      sourcePath: string;
+      targetDir: string;
+      sourceDeviceId: string;
+      targetDeviceId: string;
+      totalBytes?: number;
+      conflictAction?: 'overwrite' | 'skip' | 'rename' | 'merge';
+      targetFileName?: string;
+      absentFilesOnly?: string[];
+    }) => ipcRenderer.invoke('explorer:transfer', opts),
     onDevicesUpdated: (cb: (devices: any[]) => void) => {
       const sub = (_e: any, d: any[]) => cb(d);
       ipcRenderer.on('explorer:devices-updated', sub);
@@ -152,6 +167,8 @@ const api = {
       selectedItems?: string[];
     }) => ipcRenderer.invoke('cloud:start-transfer', opts),
     cancelTransfer: (jobId: string) => ipcRenderer.invoke('cloud:cancel-transfer', jobId),
+    pickLocalDir: () => ipcRenderer.invoke('cloud:pick-local-dir'),
+    getAppPath: (name: string) => ipcRenderer.invoke('cloud:get-app-path', name),
     onTransferProgress: (cb: (status: any) => void) => {
       const sub = (_e: any, status: any) => cb(status);
       ipcRenderer.on('cloud:transfer-progress', sub);

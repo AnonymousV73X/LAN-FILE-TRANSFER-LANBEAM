@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { app } from 'electron';
 import { SimpleFtpClient, FtpConfig } from './ftp-client';
 
 const execAsync = promisify(exec);
@@ -104,7 +105,32 @@ class ExplorerService {
   }
 
   async listPcDirectory(targetPath?: string, forceRefresh = false): Promise<{ currentPath: string; items: FileItem[] }> {
-    const dirPath = targetPath || os.homedir();
+    let dirPath = targetPath?.trim() || os.homedir();
+
+    // Map common well-known user folder aliases if a relative name was passed
+    if (!path.isAbsolute(dirPath)) {
+      const lower = dirPath.toLowerCase();
+      try {
+        if (lower === 'downloads' || lower === 'download') {
+          dirPath = app?.getPath?.('downloads') || path.join(os.homedir(), 'Downloads');
+        } else if (lower === 'documents' || lower === 'document' || lower === 'docs' || lower === 'doc') {
+          dirPath = app?.getPath?.('documents') || path.join(os.homedir(), 'Documents');
+        } else if (lower === 'desktop') {
+          dirPath = app?.getPath?.('desktop') || path.join(os.homedir(), 'Desktop');
+        } else if (lower === 'pictures' || lower === 'picture' || lower === 'photos' || lower === 'images') {
+          dirPath = app?.getPath?.('pictures') || path.join(os.homedir(), 'Pictures');
+        } else if (lower === 'music') {
+          dirPath = app?.getPath?.('music') || path.join(os.homedir(), 'Music');
+        } else if (lower === 'videos' || lower === 'video' || lower === 'movies') {
+          dirPath = app?.getPath?.('videos') || path.join(os.homedir(), 'Videos');
+        } else {
+          dirPath = path.resolve(os.homedir(), dirPath);
+        }
+      } catch {
+        dirPath = path.resolve(os.homedir(), dirPath);
+      }
+    }
+
     const now = Date.now();
 
     if (!forceRefresh) {
@@ -275,7 +301,9 @@ class ExplorerService {
     }
 
     const client = new SimpleFtpClient(cfg);
-    const normalizedPath = remotePath.replace(/^ftp:\/\/[^/]+/, '') || '/';
+    let normalizedPath = remotePath.replace(/^ftp:\/\/[^/]+/, '').replace(/^ftp:[/\\]*/i, '').trim();
+    if (!normalizedPath || normalizedPath === '.') normalizedPath = '/';
+    if (!normalizedPath.startsWith('/')) normalizedPath = '/' + normalizedPath;
     const entries = await client.list(normalizedPath);
 
     const items: FileItem[] = entries.map(e => {
@@ -302,11 +330,138 @@ class ExplorerService {
     };
   }
 
+  async checkConflicts(
+    sourceDeviceId: string,
+    targetDeviceId: string,
+    targetDir: string,
+    items: Array<{ name: string; path: string; size?: number; isDirectory: boolean }>
+  ): Promise<Array<{
+    name: string;
+    sourcePath: string;
+    targetPath: string;
+    exists: boolean;
+    isDirectory: boolean;
+    sourceSize?: number;
+    targetSize?: number;
+    hasAbsentFiles?: boolean;
+    absentFileCount?: number;
+    conflictingFiles?: string[];
+    absentFiles?: string[];
+  }>> {
+    const results = [];
+    const isTargetFtp = targetDeviceId.startsWith('ftp-');
+    const isSourceFtp = sourceDeviceId.startsWith('ftp-');
+
+    let targetItems: FileItem[] = [];
+    try {
+      if (isTargetFtp) {
+        const res = await this.listFtpDirectory(targetDeviceId, targetDir);
+        targetItems = res.items || [];
+      } else {
+        const res = await this.listPcDirectory(targetDir, true);
+        targetItems = res.items || [];
+      }
+    } catch {
+      targetItems = [];
+    }
+
+    const targetMap = new Map<string, FileItem>();
+    for (const t of targetItems) {
+      targetMap.set(t.name.toLowerCase(), t);
+    }
+
+    for (const item of items) {
+      const targetMatch = targetMap.get(item.name.toLowerCase());
+      if (!targetMatch) {
+        results.push({
+          name: item.name,
+          sourcePath: item.path,
+          targetPath: isTargetFtp
+            ? (targetDir.endsWith('/') ? targetDir + item.name : targetDir + '/' + item.name)
+            : path.join(targetDir, item.name),
+          exists: false,
+          isDirectory: item.isDirectory,
+          sourceSize: item.size || 0,
+        });
+        continue;
+      }
+
+      // Conflict exists!
+      if (item.isDirectory && targetMatch.isDirectory) {
+        try {
+          let sourceChildren: string[] = [];
+          let targetChildren: string[] = [];
+
+          if (isSourceFtp) {
+            const sc = await this.listFtpDirectory(sourceDeviceId, item.path);
+            sourceChildren = (sc.items || []).map(i => i.name);
+          } else {
+            const sc = await this.listPcDirectory(item.path, true);
+            sourceChildren = (sc.items || []).map(i => i.name);
+          }
+
+          if (isTargetFtp) {
+            const tc = await this.listFtpDirectory(targetDeviceId, targetMatch.path);
+            targetChildren = (tc.items || []).map(i => i.name);
+          } else {
+            const tc = await this.listPcDirectory(targetMatch.path, true);
+            targetChildren = (tc.items || []).map(i => i.name);
+          }
+
+          const targetLowerSet = new Set(targetChildren.map(c => c.toLowerCase()));
+          const absentFiles = sourceChildren.filter(c => !targetLowerSet.has(c.toLowerCase()));
+          const conflictingFiles = sourceChildren.filter(c => targetLowerSet.has(c.toLowerCase()));
+
+          results.push({
+            name: item.name,
+            sourcePath: item.path,
+            targetPath: targetMatch.path,
+            exists: true,
+            isDirectory: true,
+            sourceSize: item.size || 0,
+            targetSize: targetMatch.size || 0,
+            hasAbsentFiles: absentFiles.length > 0,
+            absentFileCount: absentFiles.length,
+            conflictingFiles,
+            absentFiles,
+          });
+        } catch {
+          results.push({
+            name: item.name,
+            sourcePath: item.path,
+            targetPath: targetMatch.path,
+            exists: true,
+            isDirectory: true,
+            sourceSize: item.size || 0,
+            targetSize: targetMatch.size || 0,
+          });
+        }
+      } else {
+        results.push({
+          name: item.name,
+          sourcePath: item.path,
+          targetPath: targetMatch.path,
+          exists: true,
+          isDirectory: item.isDirectory,
+          sourceSize: item.size || 0,
+          targetSize: targetMatch.size || 0,
+        });
+      }
+    }
+
+    return results;
+  }
+
   async downloadFtpItem(
     deviceId: string,
     remotePath: string,
     localDestDir: string,
-    onProgress?: (bytes: number) => void
+    onProgress?: (bytes: number) => void,
+    conflictOpts?: {
+      targetFileName?: string;
+      absentFilesOnly?: string[];
+      conflictAction?: 'overwrite' | 'skip' | 'rename' | 'merge';
+    }
   ): Promise<{ skippedFiles: Array<{ name: string; reason: string }> }> {
     const cfg = this.ftpConfigs.get(deviceId);
     if (!cfg) throw new Error(`FTP device ${deviceId} not found`);
@@ -314,7 +469,8 @@ class ExplorerService {
 
     const normalizedRemote = remotePath.replace(/^ftp:\/\/[^/]+/, '') || '/';
     const remoteBaseName = path.posix.basename(normalizedRemote) || 'download';
-    const localTarget = path.join(localDestDir, process.platform === 'win32' ? sanitizeWindowsFilename(remoteBaseName) : remoteBaseName);
+    const finalFileName = conflictOpts?.targetFileName || remoteBaseName;
+    const localTarget = path.join(localDestDir, process.platform === 'win32' ? sanitizeWindowsFilename(finalFileName) : finalFileName);
 
     console.log('[FTP Download] remotePath:', remotePath, 'normalized:', normalizedRemote, 'target:', localTarget);
     let isDir = false;
@@ -344,10 +500,17 @@ class ExplorerService {
     if (isDir) {
       // Pre-calculate total folder bytes so progress reflects true folder size
       let folderTotalBytes = 0;
+      const absentFilter = conflictOpts?.absentFilesOnly && conflictOpts.absentFilesOnly.length > 0
+        ? new Set(conflictOpts.absentFilesOnly.map(f => f.toLowerCase()))
+        : null;
+
       const scanFolderBytes = async (dir: string) => {
         try {
           const items = await client.list(dir);
           for (const it of items) {
+            if (absentFilter && !absentFilter.has(it.name.toLowerCase())) {
+              continue;
+            }
             if (it.isDirectory) {
               await scanFolderBytes(dir.endsWith('/') ? dir + it.name : dir + '/' + it.name);
             } else if (it.size > 0) {
@@ -360,15 +523,18 @@ class ExplorerService {
       if (folderTotalBytes > 0 && (onProgress as any)?.setTotalBytes) {
         (onProgress as any).setTotalBytes(folderTotalBytes);
       }
-      const walkDownload = async (remDir: string, locDir: string) => {
+      const walkDownload = async (remDir: string, locDir: string, isTopLevel = false) => {
         await fs.mkdir(locDir, { recursive: true });
         const list = await client.list(remDir);
         for (const item of list) {
+          if (isTopLevel && absentFilter && !absentFilter.has(item.name.toLowerCase())) {
+            continue; // Skip conflicting items when merging
+          }
           const itemRem = remDir.endsWith('/') ? remDir + item.name : remDir + '/' + item.name;
           const cleanItemName = process.platform === 'win32' ? sanitizeWindowsFilename(item.name) : item.name;
           const itemLoc = path.join(locDir, cleanItemName);
           if (item.isDirectory) {
-            await walkDownload(itemRem, itemLoc);
+            await walkDownload(itemRem, itemLoc, false);
           } else {
             try {
               await client.downloadFile(itemRem, itemLoc, onProgress);
@@ -384,7 +550,7 @@ class ExplorerService {
           }
         }
       };
-      await walkDownload(normalizedRemote, localTarget);
+      await walkDownload(normalizedRemote, localTarget, true);
     } else {
       await client.downloadFile(normalizedRemote, localTarget, onProgress);
     }
@@ -396,7 +562,12 @@ class ExplorerService {
     deviceId: string,
     localSourcePath: string,
     remoteDestDir: string,
-    onProgress?: (bytes: number) => void
+    onProgress?: (bytes: number) => void,
+    conflictOpts?: {
+      targetFileName?: string;
+      absentFilesOnly?: string[];
+      conflictAction?: 'overwrite' | 'skip' | 'rename' | 'merge';
+    }
   ): Promise<void> {
     const cfg = this.ftpConfigs.get(deviceId);
     if (!cfg) throw new Error(`FTP device ${deviceId} not found`);
@@ -404,23 +575,30 @@ class ExplorerService {
 
     const normalizedRemoteDir = remoteDestDir.replace(/^ftp:\/\/[^/]+/, '') || '/';
     const stat = await fs.stat(localSourcePath);
-    const baseName = path.basename(localSourcePath);
+    const baseName = conflictOpts?.targetFileName || path.basename(localSourcePath);
 
     if (stat.isDirectory()) {
-      const walkUpload = async (locDir: string, remDir: string) => {
+      const absentFilter = conflictOpts?.absentFilesOnly && conflictOpts.absentFilesOnly.length > 0
+        ? new Set(conflictOpts.absentFilesOnly.map(f => f.toLowerCase()))
+        : null;
+
+      const walkUpload = async (locDir: string, remDir: string, isTopLevel = false) => {
         const files = await fs.readdir(locDir, { withFileTypes: true });
         for (const f of files) {
+          if (isTopLevel && absentFilter && !absentFilter.has(f.name.toLowerCase())) {
+            continue; // Skip conflicting items in merge mode
+          }
           const locChild = path.join(locDir, f.name);
           const remChild = remDir.endsWith('/') ? remDir + f.name : remDir + '/' + f.name;
           if (f.isDirectory()) {
-            await walkUpload(locChild, remChild);
+            await walkUpload(locChild, remChild, false);
           } else {
             await client.uploadFile(locChild, remChild, onProgress);
           }
         }
       };
       const destFolder = normalizedRemoteDir.endsWith('/') ? normalizedRemoteDir + baseName : normalizedRemoteDir + '/' + baseName;
-      await walkUpload(localSourcePath, destFolder);
+      await walkUpload(localSourcePath, destFolder, true);
     } else {
       const destFile = normalizedRemoteDir.endsWith('/') ? normalizedRemoteDir + baseName : normalizedRemoteDir + '/' + baseName;
       await client.uploadFile(localSourcePath, destFile, onProgress);
