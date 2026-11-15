@@ -4936,10 +4936,12 @@ async function loadSplitPaneDirectory(side, deviceId, dirPath) {
       // Segment crumbs
       parts.forEach((part, idx) => {
         const isLast = idx === parts.length - 1;
-        const sepEl = document.createElement("span");
-        sepEl.className = "path-crumb-sep";
-        sepEl.textContent = isFtp ? "/" : "\\";
-        pathBar.appendChild(sepEl);
+        if (!isFtp || idx > 0) {
+          const sepEl = document.createElement("span");
+          sepEl.className = "path-crumb-sep";
+          sepEl.textContent = isFtp ? "/" : "\\";
+          pathBar.appendChild(sepEl);
+        }
 
         const crumb = document.createElement("span");
         crumb.className = "path-crumb" + (isLast ? " active" : "");
